@@ -1,10 +1,39 @@
-use egui::{Context, RichText, Color32};
-use super::super::TextToolApp;
+use std::sync::Arc;
+use egui::{RichText, Color32};
+use super::super::{TextToolApp, LlmBackend, LlmTask, MockBackend, ApiBackend};
 
 impl TextToolApp {
     // ── Panel: LLM Assistance ─────────────────────────────────────────────────
 
-    pub(in crate::app) fn draw_llm_panel(&mut self, ctx: &Context) {
+    pub(in crate::app) fn draw_llm_panel(&mut self, ctx: &egui::Context) {
+        // Poll for completed background task each frame
+        if let Some(task) = &self.llm_task {
+            match task.receiver.try_recv() {
+                Ok(Ok(text)) => {
+                    self.llm_output = text;
+                    self.status = "LLM 补全完成".to_owned();
+                    self.llm_task = None;
+                    ctx.request_repaint();
+                }
+                Ok(Err(e)) => {
+                    self.llm_output = format!("【错误】{e}");
+                    self.status = format!("LLM 调用失败: {e}");
+                    self.llm_task = None;
+                    ctx.request_repaint();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Still running – keep repainting so the spinner stays animated
+                    ctx.request_repaint();
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.llm_output = "【错误】后台线程意外断开".to_owned();
+                    self.llm_task = None;
+                }
+            }
+        }
+
+        let is_running = self.llm_task.is_some();
+
         egui::SidePanel::left("llm_config")
             .resizable(true)
             .default_width(240.0)
@@ -14,17 +43,46 @@ impl TextToolApp {
                 ui.heading("LLM 配置");
                 ui.separator();
 
-                ui.checkbox(&mut self.llm_config.use_local, "使用本地模型");
+                // Backend selector
+                ui.label("接口类型:");
+                ui.horizontal(|ui| {
+                    if ui.selectable_label(self.llm_backend_idx == 0, "🧪 模拟模型").clicked() {
+                        self.llm_backend_idx = 0;
+                    }
+                    if ui.selectable_label(self.llm_backend_idx == 1, "🌐 HTTP API").clicked() {
+                        self.llm_backend_idx = 1;
+                    }
+                });
                 ui.add_space(4.0);
+                ui.separator();
 
-                if self.llm_config.use_local {
-                    ui.label("模型路径:");
-                    ui.text_edit_singleline(&mut self.llm_config.model_path)
-                        .on_hover_text("本地模型文件路径 (.gguf 等)");
+                if self.llm_backend_idx == 1 {
+                    // API backend config
+                    ui.checkbox(&mut self.llm_config.use_local, "本地模型 (Ollama)");
+                    ui.add_space(4.0);
+                    if self.llm_config.use_local {
+                        ui.label("模型名称 / 路径:");
+                        ui.text_edit_singleline(&mut self.llm_config.model_path)
+                            .on_hover_text("Ollama 模型名称，如 llama2、phi 等");
+                        ui.add_space(4.0);
+                        ui.label("API 地址:");
+                        ui.text_edit_singleline(&mut self.llm_config.api_url)
+                            .on_hover_text("Ollama 端点，如 http://localhost:11434/api/generate");
+                    } else {
+                        ui.label("API 地址 (OpenAI 兼容):");
+                        ui.text_edit_singleline(&mut self.llm_config.api_url)
+                            .on_hover_text("如 https://api.openai.com/v1/chat/completions");
+                        ui.add_space(4.0);
+                        ui.label("模型名称:");
+                        ui.text_edit_singleline(&mut self.llm_config.model_path)
+                            .on_hover_text("如 gpt-4o、gpt-3.5-turbo 等");
+                    }
                 } else {
-                    ui.label("API 地址:");
-                    ui.text_edit_singleline(&mut self.llm_config.api_url)
-                        .on_hover_text("如 http://localhost:11434/api/generate");
+                    ui.label(
+                        RichText::new("使用内置模拟模型，\n无需配置。")
+                            .color(Color32::from_gray(150))
+                            .small(),
+                    );
                 }
 
                 ui.add_space(8.0);
@@ -39,15 +97,44 @@ impl TextToolApp {
 
                 ui.add_space(8.0);
                 ui.separator();
-                ui.label(RichText::new("支持模型:\nLlama 2 7B、Phi-2\n等本地轻量模型\n或兼容 OpenAI API\n的云端服务")
-                    .color(Color32::from_gray(140))
-                    .small());
+                ui.label(
+                    RichText::new("支持模型:\nOllama (llama2, phi…)\nOpenAI 兼容 API\n模拟模式 (无需网络)")
+                        .color(Color32::from_gray(140))
+                        .small(),
+                );
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("LLM 辅助写作");
             ui.separator();
 
+            // ── Structured context injection ───────────────────────────────────
+            ui.label(RichText::new("注入结构化上下文 (追加到提示词末尾):").small()
+                .color(Color32::from_gray(160)));
+            ui.horizontal(|ui| {
+                if ui.button("👤 注入人物信息").clicked() {
+                    let ctx_text = self.build_character_context();
+                    if ctx_text.is_empty() {
+                        self.status = "世界对象面板中暂无人物，请先添加".to_owned();
+                    } else {
+                        self.llm_prompt.push_str("\n\n");
+                        self.llm_prompt.push_str(&ctx_text);
+                        self.status = "已注入人物/世界对象信息".to_owned();
+                    }
+                }
+                if ui.button("📖 注入章节结构").clicked() {
+                    let ctx_text = self.build_structure_context();
+                    if ctx_text.is_empty() {
+                        self.status = "章节结构面板中暂无内容，请先添加".to_owned();
+                    } else {
+                        self.llm_prompt.push_str("\n\n");
+                        self.llm_prompt.push_str(&ctx_text);
+                        self.status = "已注入章节结构信息".to_owned();
+                    }
+                }
+            });
+
+            ui.add_space(6.0);
             ui.label("提示词 / 上下文:");
             egui::ScrollArea::vertical()
                 .id_salt("llm_prompt_scroll")
@@ -63,25 +150,44 @@ impl TextToolApp {
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("▶ 调用 LLM 补全").clicked() {
-                    self.llm_output = self.llm_simulate();
-                    self.status = "LLM 补全完成（模拟）".to_owned();
-                }
-                if ui.button("插入到左侧编辑区").clicked() {
-                    if !self.llm_output.is_empty() {
-                        if let Some(lf) = &mut self.left_file {
-                            lf.content.push_str("\n\n");
-                            lf.content.push_str(&self.llm_output);
-                            lf.modified = true;
-                            self.status = "已将 LLM 输出插入左侧编辑区".to_owned();
+                if is_running {
+                    ui.add(egui::Spinner::new());
+                    ui.label(RichText::new("正在调用 LLM…").color(Color32::from_rgb(200, 200, 80)));
+                    if ui.button("⏹ 取消").clicked() {
+                        // Drop the task to abandon the channel (thread finishes naturally)
+                        self.llm_task = None;
+                        self.status = "已取消 LLM 调用".to_owned();
+                    }
+                } else {
+                    if ui.button("▶ 调用 LLM 补全").clicked() {
+                        let backend: Arc<dyn LlmBackend> = if self.llm_backend_idx == 1 {
+                            Arc::new(ApiBackend)
                         } else {
-                            self.status = "请先在小说编辑面板打开 Markdown 文件".to_owned();
+                            Arc::new(MockBackend)
+                        };
+                        self.llm_task = Some(LlmTask::spawn(
+                            backend,
+                            self.llm_config.clone(),
+                            self.llm_prompt.clone(),
+                        ));
+                        self.status = "LLM 调用已提交，后台处理中…".to_owned();
+                    }
+                    if ui.button("插入到左侧编辑区").clicked() {
+                        if !self.llm_output.is_empty() {
+                            if let Some(lf) = &mut self.left_file {
+                                lf.content.push_str("\n\n");
+                                lf.content.push_str(&self.llm_output);
+                                lf.modified = true;
+                                self.status = "已将 LLM 输出插入左侧编辑区".to_owned();
+                            } else {
+                                self.status = "请先在小说编辑面板打开 Markdown 文件".to_owned();
+                            }
                         }
                     }
-                }
-                if ui.button("🗑 清空").clicked() {
-                    self.llm_prompt.clear();
-                    self.llm_output.clear();
+                    if ui.button("🗑 清空").clicked() {
+                        self.llm_prompt.clear();
+                        self.llm_output.clear();
+                    }
                 }
             });
 
@@ -99,20 +205,15 @@ impl TextToolApp {
                 });
         });
     }
+}
 
-    /// Placeholder LLM call – returns a simulated response.
-    /// Replace with actual HTTP/FFI call when integrating a real model.
+// Keep a thin `llm_simulate` shim on TextToolApp so existing callers (if any) still compile.
+impl TextToolApp {
+    #[allow(dead_code)]
     pub(in crate::app) fn llm_simulate(&self) -> String {
-        if self.llm_prompt.trim().is_empty() {
-            return "（提示词为空，请输入内容后再试）".to_owned();
-        }
-        format!(
-            "【模拟输出 – 请配置真实模型】\n\n根据您的提示「{}…」，这里将显示模型生成的文本。\n\n当前配置:\n- {}: {}\n- 温度: {:.2}\n- 最大Token: {}",
-            self.llm_prompt.chars().take(30).collect::<String>(),
-            if self.llm_config.use_local { "本地模型" } else { "API" },
-            if self.llm_config.use_local { &self.llm_config.model_path } else { &self.llm_config.api_url },
-            self.llm_config.temperature,
-            self.llm_config.max_tokens,
-        )
+        let backend = MockBackend;
+        backend.complete(&self.llm_config, &self.llm_prompt)
+            .unwrap_or_else(|e| e)
     }
 }
+
