@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 
 mod models;
 mod file_manager;
+mod llm_backend;
 mod panel;
 mod ui_helpers;
 
 pub use models::*;
 pub use file_manager::*;
+pub use llm_backend::{LlmBackend, LlmTask, MockBackend, ApiBackend};
 
 // ── Application state ─────────────────────────────────────────────────────────
 
@@ -81,6 +83,10 @@ pub struct TextToolApp {
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,
     pub(super) llm_output: String,
+    /// Currently selected backend index: 0 = mock, 1 = API.
+    pub(super) llm_backend_idx: usize,
+    /// Active non-blocking LLM task (Some while a request is in-flight).
+    pub(super) llm_task: Option<LlmTask>,
 
     // ── Markdown preview ─────────────────────────────────────────────────────
     pub(super) left_preview_mode: bool,
@@ -159,6 +165,8 @@ impl TextToolApp {
             },
             llm_prompt: String::new(),
             llm_output: String::new(),
+            llm_backend_idx: 0,
+            llm_task: None,
             left_preview_mode: false,
             md_settings: MarkdownSettings::default(),
             show_settings_window: false,
@@ -355,6 +363,51 @@ impl TextToolApp {
         } else {
             self.status = "请先打开一个项目".to_owned();
         }
+    }
+
+    // ── Structured context builders (used by LLM panel) ──────────────────────
+
+    /// Build a prompt context block listing all world objects and their links.
+    pub(super) fn build_character_context(&self) -> String {
+        if self.world_objects.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("## 世界对象\n\n");
+        for obj in &self.world_objects {
+            out.push_str(&format!("- **{}** ({})", obj.name, obj.kind.label()));
+            if !obj.description.is_empty() {
+                out.push_str(&format!(": {}", obj.description));
+            }
+            if !obj.links.is_empty() {
+                let links: Vec<String> = obj.links.iter()
+                    .map(|l| format!("{} → {}", l.kind.label(), l.target.display_name()))
+                    .collect();
+                out.push_str(&format!("  [关联: {}]", links.join(", ")));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Build a prompt context block listing the chapter structure.
+    pub(super) fn build_structure_context(&self) -> String {
+        if self.struct_roots.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("## 章节结构\n\n");
+        fn walk(nodes: &[crate::app::StructNode], depth: usize, out: &mut String) {
+            for n in nodes {
+                let indent = "  ".repeat(depth);
+                let done = if n.done { "✅" } else { "⏳" };
+                out.push_str(&format!("{indent}- {done} **{}** ({})\n", n.title, n.kind.label()));
+                if !n.summary.is_empty() {
+                    out.push_str(&format!("{indent}  > {}\n", n.summary));
+                }
+                walk(&n.children, depth + 1, out);
+            }
+        }
+        walk(&self.struct_roots, 0, &mut out);
+        out
     }
 
     // ── Tree helpers ──────────────────────────────────────────────────────────
@@ -653,5 +706,35 @@ mod tests {
         };
         assert_eq!(s.preview_font_size, 18.0);
         assert!(s.default_to_preview);
+    }
+
+    // ── Milestone tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_milestone_new() {
+        let m = Milestone::new("第一阶段完成");
+        assert_eq!(m.name, "第一阶段完成");
+        assert!(!m.completed);
+        assert!(m.description.is_empty());
+    }
+
+    #[test]
+    fn test_milestone_completion() {
+        let mut m = Milestone::new("MVP");
+        assert!(!m.completed);
+        m.completed = true;
+        assert!(m.completed);
+    }
+
+    #[test]
+    fn test_milestone_json_serialization() {
+        let mut m = Milestone::new("发布 v1.0");
+        m.description = "第一个正式版本".to_owned();
+        m.completed = true;
+        let json = serde_json::to_string(&m).unwrap();
+        let d: Milestone = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.name, "发布 v1.0");
+        assert_eq!(d.description, "第一个正式版本");
+        assert!(d.completed);
     }
 }
