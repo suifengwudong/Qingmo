@@ -68,6 +68,15 @@ pub struct TextToolApp {
     pub(super) selected_fs_idx: Option<usize>,
     pub(super) new_fs_name: String,
 
+    // ── Milestones (Panel::Structure – milestone sub-section) ────────────────
+    pub(super) milestones: Vec<Milestone>,
+    pub(super) selected_ms_idx: Option<usize>,
+    pub(super) new_ms_name: String,
+
+    // ── View mode toggles ─────────────────────────────────────────────────────
+    pub(super) obj_view_mode: ObjectViewMode,
+    pub(super) struct_view_mode: StructViewMode,
+
     // ── LLM Assistance (Panel::LLM) ──────────────────────────────────────────
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,

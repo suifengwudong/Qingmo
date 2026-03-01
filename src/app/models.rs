@@ -344,6 +344,27 @@ pub fn all_node_titles(roots: &[StructNode]) -> Vec<String> {
     out
 }
 
+// ── Milestone ─────────────────────────────────────────────────────────────────
+
+/// A project milestone – a named, describable, completable target for the novel.
+/// Examples: "完成第一章草稿", "10万字初稿", "第一阶段验收".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Milestone {
+    pub name: String,
+    pub description: String,
+    pub completed: bool,
+}
+
+impl Milestone {
+    pub fn new(name: &str) -> Self {
+        Milestone {
+            name: name.to_owned(),
+            description: String::new(),
+            completed: false,
+        }
+    }
+}
+
 // ── Foreshadow ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,6 +414,22 @@ impl Default for MarkdownSettings {
             default_to_preview: false,
         }
     }
+}
+
+// ── View mode toggles ─────────────────────────────────────────────────────────
+
+/// Toggle between list/card views in the Objects panel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ObjectViewMode {
+    List,
+    Card,
+}
+
+/// Toggle between tree/timeline views in the Structure panel.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StructViewMode {
+    Tree,
+    Timeline,
 }
 
 // ── Panel IDs ─────────────────────────────────────────────────────────────────
