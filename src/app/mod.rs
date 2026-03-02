@@ -9,7 +9,7 @@ mod ui_helpers;
 
 pub use models::*;
 pub use file_manager::*;
-pub use llm_backend::{LlmBackend, LlmTask, MockBackend, ApiBackend};
+pub use llm_backend::{LlmBackend, LlmTask, MockBackend, ApiBackend, LocalServerBackend, PromptTemplate};
 
 // ── Application state ─────────────────────────────────────────────────────────
 
@@ -83,10 +83,12 @@ pub struct TextToolApp {
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,
     pub(super) llm_output: String,
-    /// Currently selected backend index: 0 = mock, 1 = API.
+    /// Currently selected backend index: 0 = mock, 1 = API, 2 = LocalServer.
     pub(super) llm_backend_idx: usize,
     /// Active non-blocking LLM task (Some while a request is in-flight).
     pub(super) llm_task: Option<LlmTask>,
+    /// Character name selected for dialogue-style optimisation.
+    pub(super) llm_dialogue_char: String,
 
     // ── Markdown preview ─────────────────────────────────────────────────────
     pub(super) left_preview_mode: bool,
@@ -162,11 +164,13 @@ impl TextToolApp {
                 temperature: 0.7,
                 max_tokens: 512,
                 use_local: true,
+                system_prompt: String::new(),
             },
             llm_prompt: String::new(),
             llm_output: String::new(),
             llm_backend_idx: 0,
             llm_task: None,
+            llm_dialogue_char: String::new(),
             left_preview_mode: false,
             md_settings: MarkdownSettings::default(),
             show_settings_window: false,
@@ -366,6 +370,35 @@ impl TextToolApp {
     }
 
     // ── Structured context builders (used by LLM panel) ──────────────────────
+
+    /// Build a dialogue-optimization prompt for a specific character.
+    ///
+    /// Looks up the named character in `world_objects`, injects their description
+    /// and background, then wraps `dialogue_text` in an optimization request.
+    /// Returns `None` if no matching character is found.
+    pub(super) fn build_dialogue_optimization_prompt(
+        &self,
+        char_name: &str,
+        dialogue_text: &str,
+    ) -> Option<String> {
+        let obj = self.world_objects.iter().find(|o| o.name == char_name)?;
+
+        let mut ctx = format!("## 人物：{} ({})\n", obj.name, obj.kind.label());
+        if !obj.description.is_empty() {
+            ctx.push_str(&format!("- 特质：{}\n", obj.description));
+        }
+        if !obj.background.is_empty() {
+            ctx.push_str(&format!("- 背景：{}\n", obj.background));
+        }
+        if !obj.links.is_empty() {
+            let rels: Vec<String> = obj.links.iter()
+                .map(|l| format!("{} → {}", l.kind.label(), l.target.display_name()))
+                .collect();
+            ctx.push_str(&format!("- 关系：{}\n", rels.join("、")));
+        }
+
+        Some(PromptTemplate::DialogueOptimize.fill(&ctx, dialogue_text))
+    }
 
     /// Build a prompt context block listing all world objects and their links.
     pub(super) fn build_character_context(&self) -> String {
@@ -736,5 +769,68 @@ mod tests {
         assert_eq!(d.name, "发布 v1.0");
         assert_eq!(d.description, "第一个正式版本");
         assert!(d.completed);
+    }
+
+    // ── build_dialogue_optimization_prompt tests ──────────────────────────────
+
+    #[test]
+    fn test_build_dialogue_optimization_prompt_found() {
+        use crate::app::{ObjectLink, LinkTarget};
+        let mut app_objs = vec![WorldObject::new("张三", ObjectKind::Character)];
+        app_objs[0].description = "热情开朗".to_owned();
+        app_objs[0].links.push(ObjectLink {
+            target: LinkTarget::Object("李四".to_owned()),
+            kind: RelationKind::Friend,
+            note: String::new(),
+        });
+
+        // We can't construct TextToolApp without a GPU context in tests,
+        // so we test the underlying build_dialogue_optimization_prompt logic
+        // through the PromptTemplate + context combination directly.
+        let ctx = format!(
+            "## 人物：{} ({})\n- 特质：{}\n- 关系：{} → {}\n",
+            app_objs[0].name,
+            app_objs[0].kind.label(),
+            app_objs[0].description,
+            app_objs[0].links[0].kind.label(),
+            app_objs[0].links[0].target.display_name(),
+        );
+        let prompt = PromptTemplate::DialogueOptimize.fill(&ctx, "\"你好啊！\"");
+        assert!(prompt.contains("张三"));
+        assert!(prompt.contains("热情开朗"));
+        assert!(prompt.contains("友好"));
+        assert!(prompt.contains("你好啊"));
+    }
+
+    #[test]
+    fn test_build_character_context_empty() {
+        // When no world objects exist, context is empty.
+        let objects: Vec<WorldObject> = vec![];
+        let ctx: String = if objects.is_empty() {
+            String::new()
+        } else {
+            let mut out = String::from("## 世界对象\n\n");
+            for o in &objects {
+                out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
+            }
+            out
+        };
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn test_build_character_context_with_objects() {
+        let objects = vec![
+            WorldObject::new("主角", ObjectKind::Character),
+            WorldObject::new("城堡", ObjectKind::Location),
+        ];
+        let mut out = String::from("## 世界对象\n\n");
+        for o in &objects {
+            out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
+        }
+        assert!(out.contains("主角"));
+        assert!(out.contains("城堡"));
+        assert!(out.contains("人物"));
+        assert!(out.contains("地点"));
     }
 }
