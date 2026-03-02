@@ -51,6 +51,11 @@ pub struct TextToolApp {
     // New file dialog
     pub(super) new_file_dialog: Option<NewFileDialog>,
 
+    // Rename file dialog
+    pub(super) rename_dialog: Option<RenameDialog>,
+    /// Currently selected file path in the navigation tree (used for F2 rename).
+    pub(super) selected_file_path: Option<PathBuf>,
+
     // ── World Objects (Panel::Objects) ────────────────────────────────────────
     pub(super) world_objects: Vec<WorldObject>,
     pub(super) selected_obj_idx: Option<usize>,
@@ -127,6 +132,12 @@ pub(super) struct NewFileDialog {
     pub(super) dir: PathBuf,
 }
 
+#[derive(Debug)]
+pub(super) struct RenameDialog {
+    pub(super) path: PathBuf,
+    pub(super) new_name: String,
+}
+
 impl TextToolApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Load Chinese font
@@ -150,6 +161,8 @@ impl TextToolApp {
             last_focused_left: true,
             status: "欢迎使用 Text Tool".to_owned(),
             new_file_dialog: None,
+            rename_dialog: None,
+            selected_file_path: None,
             world_objects: vec![],
             selected_obj_idx: None,
             new_obj_name: String::new(),
@@ -183,7 +196,7 @@ impl TextToolApp {
             new_ms_name: String::new(),
             obj_view_mode: ObjectViewMode::List,
             struct_view_mode: StructViewMode::Tree,
-            file_tree_mode: FileTreeMode::Files,
+            file_tree_mode: FileTreeMode::Chapters,
             llm_config: LlmConfig {
                 model_path: String::new(),
                 api_url: "http://localhost:11434/api/generate".to_owned(),
@@ -385,7 +398,32 @@ impl TextToolApp {
         out
     }
 
-    // ── LLM / Agent helpers ───────────────────────────────────────────────────
+    /// Rename a file or directory on disk and update open editor paths.
+    pub(super) fn rename_file(&mut self, old_path: &std::path::Path, new_name: &str) {
+        let new_name = new_name.trim();
+        if new_name.is_empty() { return; }
+        if let Some(parent) = old_path.parent() {
+            let new_path = parent.join(new_name);
+            if let Err(e) = std::fs::rename(old_path, &new_path) {
+                self.status = format!("重命名失败: {e}");
+                return;
+            }
+            // Update open file references if needed
+            if let Some(f) = &mut self.left_file {
+                if f.path == old_path { f.path = new_path.clone(); }
+            }
+            if let Some(f) = &mut self.right_file {
+                if f.path == old_path { f.path = new_path.clone(); }
+            }
+            if self.selected_file_path.as_deref() == Some(old_path) {
+                self.selected_file_path = Some(new_path);
+            }
+            self.refresh_tree();
+            self.status = format!("已重命名: {}", new_name);
+        }
+    }
+
+
 
     /// Snapshot the current project data into a `SkillSet` for the agent backend.
     pub(super) fn build_skill_set(&self) -> SkillSet {
@@ -504,6 +542,7 @@ impl eframe::App for TextToolApp {
 
         // Dialogs
         self.draw_new_file_dialog(ctx);
+        self.draw_rename_dialog(ctx);
         self.draw_settings_window(ctx);
         self.draw_search_window(ctx);
     }
