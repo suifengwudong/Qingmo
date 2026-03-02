@@ -322,7 +322,7 @@ pub fn node_at<'a>(roots: &'a [StructNode], path: &[usize]) -> Option<&'a Struct
 }
 
 /// Navigate mutably into a tree of `StructNode`s by index path.
-pub fn node_at_mut<'a>(roots: &'a mut Vec<StructNode>, path: &[usize]) -> Option<&'a mut StructNode> {
+pub fn node_at_mut<'a>(roots: &'a mut [StructNode], path: &[usize]) -> Option<&'a mut StructNode> {
     if path.is_empty() { return None; }
     if path.len() == 1 {
         return roots.get_mut(path[0]);
@@ -388,7 +388,7 @@ impl Foreshadow {
 
 // ── LLM config ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
     pub model_path: String,
     pub api_url: String,
@@ -401,7 +401,7 @@ pub struct LlmConfig {
 
 // ── Markdown rendering settings ───────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarkdownSettings {
     /// Base font size used when rendering the preview.
     pub preview_font_size: f32,
@@ -416,6 +416,26 @@ impl Default for MarkdownSettings {
             default_to_preview: false,
         }
     }
+}
+
+// ── App configuration (persisted to disk) ─────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub llm_config: LlmConfig,
+    pub md_settings: MarkdownSettings,
+    pub last_project: Option<String>,
+    /// Whether to automatically load JSON/MD data files when opening a project.
+    pub auto_load: bool,
+}
+
+// ── Full-text search result ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    pub file_path: std::path::PathBuf,
+    pub line_no: usize,
+    pub line: String,
 }
 
 // ── View mode toggles ─────────────────────────────────────────────────────────
@@ -443,7 +463,7 @@ pub enum Panel {
     Objects,
     /// 章节结构设计 (总纲 / 卷 / 章 / 节)
     Structure,
-    LLM,
+    Llm,
 }
 
 impl Panel {
@@ -452,7 +472,7 @@ impl Panel {
             Panel::Novel     => "📝",
             Panel::Objects   => "🌐",
             Panel::Structure => "🏗",
-            Panel::LLM       => "🤖",
+            Panel::Llm       => "🤖",
         }
     }
     pub fn label(self) -> &'static str {
@@ -460,7 +480,7 @@ impl Panel {
             Panel::Novel     => "小说编辑",
             Panel::Objects   => "世界对象",
             Panel::Structure => "章节结构",
-            Panel::LLM       => "LLM辅助",
+            Panel::Llm       => "LLM辅助",
         }
     }
 }
