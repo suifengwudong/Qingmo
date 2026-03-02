@@ -90,7 +90,7 @@ pub struct TextToolApp {
     pub(super) obj_view_mode: ObjectViewMode,
     pub(super) struct_view_mode: StructViewMode,
 
-    // ── LLM Assistance (Panel::LLM) ──────────────────────────────────────────
+    // ── LLM Assistance (Panel::Llm) ──────────────────────────────────────────
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,
     pub(super) llm_output: String,
@@ -238,7 +238,7 @@ impl TextToolApp {
 
     pub(super) fn refresh_tree(&mut self) {
         if let Some(root) = &self.project_root {
-            self.file_tree = vec!["Content", "Design", "废稿"]
+            self.file_tree = ["Content", "Design", "废稿"]
                 .iter()
                 .filter_map(|sub| {
                     let p = root.join(sub);
@@ -782,7 +782,7 @@ impl eframe::App for TextToolApp {
             Panel::Structure => {
                 self.draw_structure_panel(ctx);
             }
-            Panel::LLM => {
+            Panel::Llm => {
                 self.draw_llm_panel(ctx);
             }
         }

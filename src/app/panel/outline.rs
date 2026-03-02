@@ -74,7 +74,7 @@ impl TextToolApp {
                         let roots_snapshot = self.struct_roots.clone();
                         let selected = self.selected_node_path.clone();
                         Self::draw_struct_tree(
-                            ui, ctx, &roots_snapshot, &selected, &[],
+                            ui, &roots_snapshot, &selected, &[],
                             &mut add_child, &mut remove_node, &mut move_up,
                             &mut root_dnd_move,
                             &mut self.selected_node_path,
@@ -388,7 +388,6 @@ impl TextToolApp {
     #[allow(clippy::too_many_arguments)]
     fn draw_struct_tree(
         ui: &mut egui::Ui,
-        ctx: &egui::Context,
         nodes: &[StructNode],
         selected: &[usize],
         path: &[usize],
@@ -488,7 +487,7 @@ impl TextToolApp {
 
             if !node.children.is_empty() {
                 Self::draw_struct_tree(
-                    ui, ctx, &node.children, selected, &cur_path,
+                    ui, &node.children, selected, &cur_path,
                     add_child, remove_node, move_up, root_dnd_move, selected_path,
                 );
             }
@@ -509,7 +508,7 @@ impl TextToolApp {
         }
     }
 
-    fn move_node_up(roots: &mut Vec<StructNode>, path: &[usize]) {
+    fn move_node_up(roots: &mut [StructNode], path: &[usize]) {
         if path.is_empty() { return; }
         let idx = *path.last().unwrap();
         if idx == 0 { return; }
