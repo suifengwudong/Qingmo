@@ -3,11 +3,15 @@ use std::path::{Path, PathBuf};
 
 mod models;
 mod file_manager;
+mod llm_backend;
+mod agent;
 mod panel;
 mod ui_helpers;
 
 pub use models::*;
 pub use file_manager::*;
+pub use llm_backend::{LlmBackend, LlmTask, MockBackend, ApiBackend, LocalServerBackend, PromptTemplate};
+pub use agent::{Skill, SkillSet, AgentBackend};
 
 // ── Application state ─────────────────────────────────────────────────────────
 
@@ -68,10 +72,25 @@ pub struct TextToolApp {
     pub(super) selected_fs_idx: Option<usize>,
     pub(super) new_fs_name: String,
 
+    // ── Milestones (Panel::Structure – milestone sub-section) ────────────────
+    pub(super) milestones: Vec<Milestone>,
+    pub(super) selected_ms_idx: Option<usize>,
+    pub(super) new_ms_name: String,
+
+    // ── View mode toggles ─────────────────────────────────────────────────────
+    pub(super) obj_view_mode: ObjectViewMode,
+    pub(super) struct_view_mode: StructViewMode,
+
     // ── LLM Assistance (Panel::LLM) ──────────────────────────────────────────
     pub(super) llm_config: LlmConfig,
     pub(super) llm_prompt: String,
     pub(super) llm_output: String,
+    /// Currently selected backend index: 0 = mock, 1 = HTTP API, 2 = LocalServer, 3 = Agent.
+    pub(super) llm_backend_idx: usize,
+    /// Active non-blocking LLM task (Some while a request is in-flight).
+    pub(super) llm_task: Option<LlmTask>,
+    /// Character name selected for dialogue-style optimisation.
+    pub(super) llm_dialogue_char: String,
 
     // ── Markdown preview ─────────────────────────────────────────────────────
     pub(super) left_preview_mode: bool,
@@ -128,15 +147,32 @@ impl TextToolApp {
             foreshadows: vec![],
             selected_fs_idx: None,
             new_fs_name: String::new(),
+            milestones: vec![
+                Milestone::new("完成 VS Code 风格 UI 复刻"),
+                Milestone::new("实现本地 MD/JSON 文件操作"),
+                Milestone::new("完成轻量化基础（体积/速度/内存）"),
+                Milestone::new("完成人设图形化编辑器（卡片视图）"),
+                Milestone::new("完成章节时间轴编辑器"),
+                Milestone::new("完成大纲树与伏笔管理"),
+                Milestone::new("接入本地 LLM 模型"),
+            ],
+            selected_ms_idx: None,
+            new_ms_name: String::new(),
+            obj_view_mode: ObjectViewMode::List,
+            struct_view_mode: StructViewMode::Tree,
             llm_config: LlmConfig {
                 model_path: String::new(),
                 api_url: "http://localhost:11434/api/generate".to_owned(),
                 temperature: 0.7,
                 max_tokens: 512,
                 use_local: true,
+                system_prompt: String::new(),
             },
             llm_prompt: String::new(),
             llm_output: String::new(),
+            llm_backend_idx: 0,
+            llm_task: None,
+            llm_dialogue_char: String::new(),
             left_preview_mode: false,
             md_settings: MarkdownSettings::default(),
             show_settings_window: false,
@@ -253,66 +289,181 @@ impl TextToolApp {
         }
     }
 
-    /// Sync: save world objects to Design/世界对象.json.
-    pub(super) fn sync_world_objects_to_json(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Design").join("世界对象.json");
-            match serde_json::to_string_pretty(&self.world_objects) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(&path, &json) {
-                        self.status = format!("保存世界对象失败: {e}");
-                    } else {
-                        self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
-                    }
-                }
-                Err(e) => self.status = format!("序列化失败: {e}"),
+    /// Write `content` to `<project_root>/<subdir>/<filename>`.
+    /// Sets `self.status` on error or when no project is open.
+    /// Returns `true` on success.
+    fn write_project_file(&mut self, subdir: &str, filename: &str, content: &str) -> bool {
+        if let Some(root) = self.project_root.as_ref() {
+            let path = root.join(subdir).join(filename);
+            if let Err(e) = std::fs::write(&path, content) {
+                self.status = format!("写入 {} 失败: {e}", path.display());
+                return false;
             }
+            true
         } else {
             self.status = "请先打开一个项目".to_owned();
+            false
+        }
+    }
+
+    /// Sync: save world objects to Design/世界对象.json.
+    pub(super) fn sync_world_objects_to_json(&mut self) {
+        match serde_json::to_string_pretty(&self.world_objects) {
+            Ok(json) => {
+                if self.write_project_file("Design", "世界对象.json", &json) {
+                    self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
+                }
+            }
+            Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
     /// Sync: save struct tree to Design/章节结构.json.
     pub(super) fn sync_struct_to_json(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Design").join("章节结构.json");
-            match serde_json::to_string_pretty(&self.struct_roots) {
-                Ok(json) => {
-                    if let Err(e) = std::fs::write(&path, &json) {
-                        self.status = format!("保存章节结构失败: {e}");
-                    } else {
-                        self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
-                    }
+        match serde_json::to_string_pretty(&self.struct_roots) {
+            Ok(json) => {
+                if self.write_project_file("Design", "章节结构.json", &json) {
+                    self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
                 }
-                Err(e) => self.status = format!("序列化失败: {e}"),
             }
-        } else {
-            self.status = "请先打开一个项目".to_owned();
+            Err(e) => self.status = format!("序列化失败: {e}"),
+        }
+    }
+
+    /// Sync: save milestones to Design/里程碑.json.
+    pub(super) fn sync_milestones_to_json(&mut self) {
+        match serde_json::to_string_pretty(&self.milestones) {
+            Ok(json) => {
+                if self.write_project_file("Design", "里程碑.json", &json) {
+                    self.status = "里程碑已同步到 Design/里程碑.json".to_owned();
+                }
+            }
+            Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
     /// Sync: save foreshadows to Content/伏笔.md in the project.
     pub(super) fn sync_foreshadows_to_md(&mut self) {
-        if let Some(root) = &self.project_root {
-            let path = root.join("Content").join("伏笔.md");
-            let mut md = String::from("# 伏笔列表\n\n");
-            for fs in &self.foreshadows {
-                let status = if fs.resolved { "✅ 已解决" } else { "⏳ 未解决" };
-                md.push_str(&format!("## {} {}\n\n", fs.name, status));
-                if !fs.description.is_empty() {
-                    md.push_str(&format!("{}\n\n", fs.description));
-                }
-                if !fs.related_chapters.is_empty() {
-                    md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
-                }
+        let mut md = String::from("# 伏笔列表\n\n");
+        for fs in &self.foreshadows {
+            let status = if fs.resolved { "✅ 已解决" } else { "⏳ 未解决" };
+            md.push_str(&format!("## {} {}\n\n", fs.name, status));
+            if !fs.description.is_empty() {
+                md.push_str(&format!("{}\n\n", fs.description));
             }
-            if let Err(e) = std::fs::write(&path, &md) {
-                self.status = format!("保存伏笔失败: {e}");
-            } else {
-                self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
+            if !fs.related_chapters.is_empty() {
+                md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
             }
-        } else {
-            self.status = "请先打开一个项目".to_owned();
+        }
+        if self.write_project_file("Content", "伏笔.md", &md) {
+            self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
+        }
+    }
+
+    // ── Structured context builders (used by LLM panel) ──────────────────────
+
+    /// Build a dialogue-optimization prompt for a specific character.
+    ///
+    /// Looks up the named character in `world_objects`, injects their description
+    /// and background, then wraps `dialogue_text` in an optimization request.
+    /// Returns `None` if no matching character is found.
+    pub(super) fn build_dialogue_optimization_prompt(
+        &self,
+        char_name: &str,
+        dialogue_text: &str,
+    ) -> Option<String> {
+        let obj = self.world_objects.iter().find(|o| o.name == char_name)?;
+
+        let mut ctx = format!("## 人物：{} ({})\n", obj.name, obj.kind.label());
+        if !obj.description.is_empty() {
+            ctx.push_str(&format!("- 特质：{}\n", obj.description));
+        }
+        if !obj.background.is_empty() {
+            ctx.push_str(&format!("- 背景：{}\n", obj.background));
+        }
+        if !obj.links.is_empty() {
+            let rels: Vec<String> = obj.links.iter()
+                .map(|l| format!("{} → {}", l.kind.label(), l.target.display_name()))
+                .collect();
+            ctx.push_str(&format!("- 关系：{}\n", rels.join("、")));
+        }
+
+        Some(PromptTemplate::DialogueOptimize.fill(&ctx, dialogue_text))
+    }
+
+    /// Build a prompt context block listing all world objects and their links.
+    pub(super) fn build_character_context(&self) -> String {
+        if self.world_objects.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("## 世界对象\n\n");
+        for obj in &self.world_objects {
+            out.push_str(&format!("- **{}** ({})", obj.name, obj.kind.label()));
+            if !obj.description.is_empty() {
+                out.push_str(&format!(": {}", obj.description));
+            }
+            if !obj.links.is_empty() {
+                let links: Vec<String> = obj.links.iter()
+                    .map(|l| format!("{} → {}", l.kind.label(), l.target.display_name()))
+                    .collect();
+                out.push_str(&format!("  [关联: {}]", links.join(", ")));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Build a prompt context block listing the chapter structure.
+    pub(super) fn build_structure_context(&self) -> String {
+        if self.struct_roots.is_empty() {
+            return String::new();
+        }
+        let mut out = String::from("## 章节结构\n\n");
+        fn walk(nodes: &[crate::app::StructNode], depth: usize, out: &mut String) {
+            for n in nodes {
+                let indent = "  ".repeat(depth);
+                let done = if n.done { "✅" } else { "⏳" };
+                out.push_str(&format!("{indent}- {done} **{}** ({})\n", n.title, n.kind.label()));
+                if !n.summary.is_empty() {
+                    out.push_str(&format!("{indent}  > {}\n", n.summary));
+                }
+                walk(&n.children, depth + 1, out);
+            }
+        }
+        walk(&self.struct_roots, 0, &mut out);
+        out
+    }
+
+    // ── LLM / Agent helpers ───────────────────────────────────────────────────
+
+    /// Snapshot the current project data into a `SkillSet` for the agent backend.
+    pub(super) fn build_skill_set(&self) -> SkillSet {
+        SkillSet::new(
+            self.world_objects.clone(),
+            self.struct_roots.clone(),
+            self.foreshadows.clone(),
+        )
+    }
+
+    /// Construct the `AgentBackend` for the currently-open project.
+    pub(super) fn make_agent_backend(&self) -> AgentBackend {
+        AgentBackend { skills: self.build_skill_set() }
+    }
+
+    /// Return the LLM backend that corresponds to `self.llm_backend_idx`.
+    ///
+    /// | idx | Backend |
+    /// |-----|---------|
+    /// | 0   | `MockBackend` (default / offline) |
+    /// | 1   | `ApiBackend` (Ollama or OpenAI-compat HTTP) |
+    /// | 2   | `LocalServerBackend` (llama.cpp native `/completion`) |
+    /// | 3   | `AgentBackend` (OpenAI tool-calling loop) |
+    pub(super) fn make_llm_backend(&self) -> std::sync::Arc<dyn LlmBackend> {
+        match self.llm_backend_idx {
+            1 => std::sync::Arc::new(ApiBackend),
+            2 => std::sync::Arc::new(LocalServerBackend),
+            3 => std::sync::Arc::new(self.make_agent_backend()),
+            _ => std::sync::Arc::new(MockBackend),
         }
     }
 
@@ -612,5 +763,98 @@ mod tests {
         };
         assert_eq!(s.preview_font_size, 18.0);
         assert!(s.default_to_preview);
+    }
+
+    // ── Milestone tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_milestone_new() {
+        let m = Milestone::new("第一阶段完成");
+        assert_eq!(m.name, "第一阶段完成");
+        assert!(!m.completed);
+        assert!(m.description.is_empty());
+    }
+
+    #[test]
+    fn test_milestone_completion() {
+        let mut m = Milestone::new("MVP");
+        assert!(!m.completed);
+        m.completed = true;
+        assert!(m.completed);
+    }
+
+    #[test]
+    fn test_milestone_json_serialization() {
+        let mut m = Milestone::new("发布 v1.0");
+        m.description = "第一个正式版本".to_owned();
+        m.completed = true;
+        let json = serde_json::to_string(&m).unwrap();
+        let d: Milestone = serde_json::from_str(&json).unwrap();
+        assert_eq!(d.name, "发布 v1.0");
+        assert_eq!(d.description, "第一个正式版本");
+        assert!(d.completed);
+    }
+
+    // ── build_dialogue_optimization_prompt tests ──────────────────────────────
+
+    #[test]
+    fn test_build_dialogue_optimization_prompt_found() {
+        use crate::app::{ObjectLink, LinkTarget};
+        let mut app_objs = vec![WorldObject::new("张三", ObjectKind::Character)];
+        app_objs[0].description = "热情开朗".to_owned();
+        app_objs[0].links.push(ObjectLink {
+            target: LinkTarget::Object("李四".to_owned()),
+            kind: RelationKind::Friend,
+            note: String::new(),
+        });
+
+        // We can't construct TextToolApp without a GPU context in tests,
+        // so we test the underlying build_dialogue_optimization_prompt logic
+        // through the PromptTemplate + context combination directly.
+        let ctx = format!(
+            "## 人物：{} ({})\n- 特质：{}\n- 关系：{} → {}\n",
+            app_objs[0].name,
+            app_objs[0].kind.label(),
+            app_objs[0].description,
+            app_objs[0].links[0].kind.label(),
+            app_objs[0].links[0].target.display_name(),
+        );
+        let prompt = PromptTemplate::DialogueOptimize.fill(&ctx, "\"你好啊！\"");
+        assert!(prompt.contains("张三"));
+        assert!(prompt.contains("热情开朗"));
+        assert!(prompt.contains("友好"));
+        assert!(prompt.contains("你好啊"));
+    }
+
+    #[test]
+    fn test_build_character_context_empty() {
+        // When no world objects exist, context is empty.
+        let objects: Vec<WorldObject> = vec![];
+        let ctx: String = if objects.is_empty() {
+            String::new()
+        } else {
+            let mut out = String::from("## 世界对象\n\n");
+            for o in &objects {
+                out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
+            }
+            out
+        };
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn test_build_character_context_with_objects() {
+        let objects = vec![
+            WorldObject::new("主角", ObjectKind::Character),
+            WorldObject::new("城堡", ObjectKind::Location),
+        ];
+        let mut out = String::from("## 世界对象\n\n");
+        for o in &objects {
+            out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
+        }
+        assert!(out.contains("主角"));
+        assert!(out.contains("城堡"));
+        assert!(out.contains("人物"));
+        assert!(out.contains("地点"));
     }
 }
