@@ -471,8 +471,8 @@ impl Panel {
         match self {
             Panel::Novel     => "📝",
             Panel::Objects   => "🌐",
-            Panel::Structure => "🏗",
-            Panel::Llm       => "🤖",
+            Panel::Structure => "纲",
+            Panel::Llm       => "智",
         }
     }
     pub fn label(self) -> &'static str {
