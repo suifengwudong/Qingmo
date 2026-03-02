@@ -17,6 +17,13 @@ impl TextToolApp {
                         }
                         ui.close_menu();
                     }
+                    if ui.button("📋 新建项目（模板）…")
+                        .on_hover_text("使用短篇或长篇模板快速创建项目文件结构")
+                        .clicked()
+                    {
+                        self.show_template_dialog = true;
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button("新建文件…").clicked() {
                         if let Some(root) = self.project_root.clone() {
@@ -746,5 +753,104 @@ impl TextToolApp {
         if let Some(path) = open_file {
             self.open_file_in_pane(&path, true);
         }
+    }
+
+    /// Draw the novel template selection dialog.
+    pub(super) fn draw_template_dialog(&mut self, ctx: &Context) {
+        if !self.show_template_dialog { return; }
+
+        let mut close = false;
+        egui::Window::new("📋 新建项目（选择模板）")
+            .collapsible(false)
+            .resizable(false)
+            .min_width(380.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                if self.project_root.is_none() {
+                    ui.label(
+                        RichText::new("⚠ 请先通过「文件 → 打开项目文件夹…」打开一个文件夹，\n再应用模板。")
+                            .color(Color32::from_rgb(220, 180, 60)),
+                    );
+                    ui.add_space(6.0);
+                    if ui.button("关闭").clicked() { close = true; }
+                    return;
+                }
+
+                ui.label(RichText::new("请选择小说模板：").strong());
+                ui.add_space(6.0);
+
+                egui::Grid::new("template_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        // Short template card
+                        let short_frame = egui::Frame::none()
+                            .fill(Color32::from_rgb(30, 50, 75))
+                            .rounding(8.0)
+                            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+                        let short_resp = short_frame.show(ui, |ui| {
+                            ui.set_min_width(155.0);
+                            ui.heading("📄 短篇");
+                            ui.separator();
+                            ui.label(RichText::new("单层章节结构").strong());
+                            ui.label(
+                                RichText::new("Content/\n  序章.md\n  第一章.md\n  第二章.md\n  …")
+                                    .monospace().small().color(Color32::from_gray(150)),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("适合短篇小说，所有章节\n直接在 Content/ 下")
+                                    .small().color(Color32::from_gray(160)),
+                            );
+                        }).response.interact(egui::Sense::click());
+
+                        // Long template card
+                        let long_frame = egui::Frame::none()
+                            .fill(Color32::from_rgb(40, 50, 30))
+                            .rounding(8.0)
+                            .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+                        let long_resp = long_frame.show(ui, |ui| {
+                            ui.set_min_width(155.0);
+                            ui.heading("📚 长篇");
+                            ui.separator();
+                            ui.label(RichText::new("卷→章二层结构").strong());
+                            ui.label(
+                                RichText::new("Content/\n  第一卷/\n    第一章.md\n    第二章.md\n  第二卷/\n    …")
+                                    .monospace().small().color(Color32::from_gray(150)),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("适合长篇小说，Content/ 按\n「卷」分子目录管理章节")
+                                    .small().color(Color32::from_gray(160)),
+                            );
+                        }).response.interact(egui::Sense::click());
+
+                        if short_resp.clicked() {
+                            self.apply_template_short();
+                            close = true;
+                        }
+                        short_resp.on_hover_text("点击应用短篇模板");
+
+                        if long_resp.clicked() {
+                            self.apply_template_long();
+                            close = true;
+                        }
+                        long_resp.on_hover_text("点击应用长篇模板");
+
+                        ui.end_row();
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("已有文件不会被覆盖").small().color(Color32::from_gray(130)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("取消").clicked() { close = true; }
+                    });
+                });
+            });
+
+        if close { self.show_template_dialog = false; }
     }
 }

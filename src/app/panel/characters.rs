@@ -7,48 +7,45 @@ use super::super::{
 impl TextToolApp {
     // ── Panel: World Objects ──────────────────────────────────────────────────
     //
-    // Left side-panel: object list with kind filter
-    // Central panel:   selected object editor + links (object↔object and object↔node)
+    // Left side-panel: object list, object editor form, add form
+    // Central panel:   relationship canvas (nodes + connecting lines)
 
     pub(in crate::app) fn draw_objects_panel(&mut self, ctx: &Context) {
-        // ── Left: object list ──────────────────────────────────────────────────
         let mut open_obj: Option<usize> = None;
         let mut remove_obj: Option<usize> = None;
+        let mut do_sync = false;
+        let mut do_add_link = false;
+        let mut remove_link: Option<usize> = None;
+
+        // Collect autocomplete lists before any mutable borrow (used for future autocomplete)
+        let _obj_names = self.all_object_names();
 
         egui::SidePanel::left("obj_list")
             .resizable(true)
-            .default_width(200.0)
-            .min_width(130.0)
+            .default_width(300.0)
+            .min_width(200.0)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.heading("世界对象");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // JSON sync
+                        if ui.small_button("⬆").on_hover_text("保存世界对象到 Design/世界对象.json").clicked() {
+                            do_sync = true;
+                        }
+                        if ui.small_button("⬇").on_hover_text("从 Design/世界对象.json 加载世界对象").clicked() {
+                            self.load_world_objects_from_json();
+                        }
                         // View mode toggle
                         let is_card = self.obj_view_mode == ObjectViewMode::Card;
-                        if ui.selectable_label(is_card, "🃏 卡片")
-                            .on_hover_text("切换到卡片视图").clicked()
-                        {
+                        if ui.selectable_label(is_card, "🃏").on_hover_text("卡片视图").clicked() {
                             self.obj_view_mode = ObjectViewMode::Card;
                         }
-                        if ui.selectable_label(!is_card, "☰ 列表")
-                            .on_hover_text("切换到列表视图").clicked()
-                        {
+                        if ui.selectable_label(!is_card, "☰").on_hover_text("列表视图").clicked() {
                             self.obj_view_mode = ObjectViewMode::List;
                         }
                     });
                 });
-                // JSON sync buttons
-                ui.horizontal(|ui| {
-                    if ui.small_button("⬆ 保存JSON").on_hover_text("保存世界对象到 Design/世界对象.json").clicked() {
-                        self.sync_world_objects_to_json();
-                    }
-                    if ui.small_button("⬇ 加载JSON").on_hover_text("从 Design/世界对象.json 加载世界对象").clicked() {
-                        self.load_world_objects_from_json();
-                    }
-                });
-                ui.separator();
-
                 // Kind filter chips
                 ui.horizontal_wrapped(|ui| {
                     let all_sel = self.obj_kind_filter.is_none();
@@ -60,130 +57,93 @@ impl TextToolApp {
                         if ui.selectable_label(sel,
                             format!("{} {}", k.icon(), k.label())).clicked()
                         {
-                            if sel {
-                                self.obj_kind_filter = None;
-                            } else {
-                                self.obj_kind_filter = Some(k.clone());
-                            }
+                            self.obj_kind_filter = if sel { None } else { Some(k.clone()) };
                         }
                     }
                 });
                 ui.separator();
 
-                egui::ScrollArea::vertical().id_salt("obj_list_scroll").show(ui, |ui| {
-                    if self.obj_view_mode == ObjectViewMode::List {
-                        let mut pending_move: Option<(usize, usize)> = None;
-                        // Index loop required: we pass `i` as the DnD payload and need
-                        // to detect drops by index after the draw pass completes.
-                        for i in 0..self.world_objects.len() {
-                            let obj = &self.world_objects[i];
-                            // Apply kind filter
-                            if let Some(ref filter) = self.obj_kind_filter {
-                                if &obj.kind != filter { continue; }
-                            }
-                            let selected = self.selected_obj_idx == Some(i);
-                            let label = format!("{} {}", obj.icon(), obj.name);
-                            let item_id = egui::Id::new(("wo_drag", i));
-                            let ir = ui.dnd_drag_source(item_id, i, |ui| {
-                                ui.selectable_label(selected, &label)
-                            });
-                            // Detect drop onto this item
-                            if let Some(payload) = ir.response.dnd_release_payload::<usize>() {
-                                let from = *payload;
-                                if from != i { pending_move = Some((from, i)); }
-                            }
-                            ir.response.context_menu(|ui| {
-                                if ui.button("删除").clicked() {
-                                    remove_obj = Some(i);
-                                    ui.close_menu();
+                // ── Object list (top portion) ──────────────────────────────────
+                let list_height = 160.0_f32;
+                egui::ScrollArea::vertical()
+                    .id_salt("obj_list_scroll")
+                    .max_height(list_height)
+                    .show(ui, |ui| {
+                        if self.obj_view_mode == ObjectViewMode::List {
+                            let mut pending_move: Option<(usize, usize)> = None;
+                            for i in 0..self.world_objects.len() {
+                                let obj = &self.world_objects[i];
+                                if let Some(ref filter) = self.obj_kind_filter {
+                                    if &obj.kind != filter { continue; }
                                 }
-                            });
-                            if ir.inner.clicked() { open_obj = Some(i); }
-                        }
-                        if let Some((from, to)) = pending_move {
-                            if from < self.world_objects.len() && to < self.world_objects.len() {
-                                let item = self.world_objects.remove(from);
-                                self.world_objects.insert(to, item);
-                                if let Some(sel) = self.selected_obj_idx {
-                                    if sel == from {
-                                        self.selected_obj_idx = Some(to);
-                                    } else if from < to && sel > from && sel <= to {
-                                        self.selected_obj_idx = Some(sel - 1);
-                                    } else if from > to && sel >= to && sel < from {
-                                        self.selected_obj_idx = Some(sel + 1);
+                                let selected = self.selected_obj_idx == Some(i);
+                                let label = format!("{} {}", obj.icon(), obj.name);
+                                let item_id = egui::Id::new(("wo_drag", i));
+                                let ir = ui.dnd_drag_source(item_id, i, |ui| {
+                                    ui.selectable_label(selected, &label)
+                                });
+                                if let Some(payload) = ir.response.dnd_release_payload::<usize>() {
+                                    let from = *payload;
+                                    if from != i { pending_move = Some((from, i)); }
+                                }
+                                ir.response.context_menu(|ui| {
+                                    if ui.button("删除").clicked() {
+                                        remove_obj = Some(i);
+                                        ui.close_menu();
+                                    }
+                                });
+                                if ir.inner.clicked() { open_obj = Some(i); }
+                            }
+                            if let Some((from, to)) = pending_move {
+                                if from < self.world_objects.len() && to < self.world_objects.len() {
+                                    let item = self.world_objects.remove(from);
+                                    self.world_objects.insert(to, item);
+                                    if let Some(sel) = self.selected_obj_idx {
+                                        if sel == from {
+                                            self.selected_obj_idx = Some(to);
+                                        } else if from < to && sel > from && sel <= to {
+                                            self.selected_obj_idx = Some(sel - 1);
+                                        } else if from > to && sel >= to && sel < from {
+                                            self.selected_obj_idx = Some(sel + 1);
+                                        }
                                     }
                                 }
                             }
-                        }
-                    } else {
-                        // Card view: each object as a small styled card
-                        for (i, obj) in self.world_objects.iter().enumerate() {
-                            // Apply kind filter
-                            if let Some(ref filter) = self.obj_kind_filter {
-                                if &obj.kind != filter { continue; }
-                            }
-                            let selected = self.selected_obj_idx == Some(i);
-                            let bg = if selected {
-                                Color32::from_rgb(0, 80, 140)
-                            } else {
-                                Color32::from_gray(38)
-                            };
-                            let card_resp = egui::Frame::none()
-                                .fill(bg)
-                                .rounding(6.0)
-                                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                                .show(ui, |ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(obj.icon()).size(20.0));
-                                        ui.vertical(|ui| {
-                                            ui.label(RichText::new(&obj.name).strong());
-                                            ui.label(
-                                                RichText::new(obj.kind.label())
-                                                    .small()
-                                                    .color(Color32::from_gray(160)),
-                                            );
-                                            if !obj.description.is_empty() {
-                                                let preview: String = obj.description
-                                                    .chars().take(30).collect();
-                                                let suffix = if obj.description.chars().count() > 30 { "…" } else { "" };
-                                                ui.label(
-                                                    RichText::new(format!("{preview}{suffix}"))
-                                                        .small()
-                                                        .color(Color32::from_gray(140)),
-                                                );
-                                            }
-                                            if !obj.links.is_empty() {
-                                                ui.label(
-                                                    RichText::new(format!("🔗 {} 个关联", obj.links.len()))
-                                                        .small()
-                                                        .color(Color32::from_rgb(120, 180, 240)),
-                                                );
-                                            }
-                                        });
-                                    });
-                                })
-                                .response;
-                            let card_resp = card_resp.interact(egui::Sense::click());
-                            card_resp.context_menu(|ui| {
-                                if ui.button("删除").clicked() {
-                                    remove_obj = Some(i);
-                                    ui.close_menu();
+                        } else {
+                            for (i, obj) in self.world_objects.iter().enumerate() {
+                                if let Some(ref filter) = self.obj_kind_filter {
+                                    if &obj.kind != filter { continue; }
                                 }
-                            });
-                            if card_resp.clicked() {
-                                open_obj = Some(i);
+                                let selected = self.selected_obj_idx == Some(i);
+                                let bg = if selected { Color32::from_rgb(0, 80, 140) } else { Color32::from_gray(38) };
+                                let card_resp = egui::Frame::none()
+                                    .fill(bg).rounding(6.0)
+                                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                    .show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(obj.icon()).size(18.0));
+                                            ui.label(RichText::new(&obj.name).strong());
+                                            ui.label(RichText::new(obj.kind.label()).small().color(Color32::from_gray(160)));
+                                        });
+                                    }).response.interact(egui::Sense::click());
+                                card_resp.context_menu(|ui| {
+                                    if ui.button("删除").clicked() {
+                                        remove_obj = Some(i);
+                                        ui.close_menu();
+                                    }
+                                });
+                                if card_resp.clicked() { open_obj = Some(i); }
+                                ui.add_space(2.0);
                             }
-                            ui.add_space(4.0);
                         }
-                    }
-                });
+                    });
 
+                // ── Quick-add form ─────────────────────────────────────────────
                 ui.separator();
-                // Add-object row
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.new_obj_name)
-                        .on_hover_text("输入对象名称");
+                    ui.add(egui::TextEdit::singleline(&mut self.new_obj_name)
+                        .hint_text("新对象名称").desired_width(100.0));
                     egui::ComboBox::from_id_salt("new_obj_kind")
                         .selected_text(format!("{} {}", self.new_obj_kind.icon(), self.new_obj_kind.label()))
                         .width(80.0)
@@ -193,15 +153,93 @@ impl TextToolApp {
                                 ui.selectable_value(&mut self.new_obj_kind, k.clone(), label);
                             }
                         });
-                });
-                if ui.button("➕ 添加对象").clicked() {
-                    let name = self.new_obj_name.trim().to_owned();
-                    if !name.is_empty() {
-                        let idx = self.world_objects.len();
-                        self.world_objects.push(WorldObject::new(&name, self.new_obj_kind.clone()));
-                        self.selected_obj_idx = Some(idx);
-                        self.new_obj_name.clear();
+                    if ui.button("➕").on_hover_text("添加新对象").clicked() {
+                        let name = self.new_obj_name.trim().to_owned();
+                        if !name.is_empty() {
+                            let idx = self.world_objects.len();
+                            self.world_objects.push(WorldObject::new(&name, self.new_obj_kind.clone()));
+                            self.selected_obj_idx = Some(idx);
+                            self.new_obj_name.clear();
+                        }
                     }
+                });
+                ui.separator();
+
+                // ── Selected-object detail editor ──────────────────────────────
+                if let Some(idx) = self.selected_obj_idx {
+                    if idx < self.world_objects.len() {
+                        egui::ScrollArea::vertical().id_salt("obj_detail_scroll").show(ui, |ui| {
+                            let obj = &mut self.world_objects[idx];
+
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(obj.icon()).size(18.0));
+                                ui.text_edit_singleline(&mut obj.name);
+                            });
+
+                            ui.add_space(2.0);
+                            ui.label("描述 / 核心特质:");
+                            ui.add(egui::TextEdit::multiline(&mut obj.description)
+                                .desired_rows(2).desired_width(f32::INFINITY));
+
+                            ui.add_space(2.0);
+                            ui.label("背景故事:");
+                            ui.add(egui::TextEdit::multiline(&mut obj.background)
+                                .desired_rows(3).desired_width(f32::INFINITY));
+
+                            ui.add_space(4.0);
+                            ui.separator();
+                            ui.label(RichText::new("关联").strong());
+
+                            if obj.links.is_empty() {
+                                ui.label(RichText::new("（暂无关联）").color(Color32::GRAY).small());
+                            } else {
+                                for (li, link) in obj.links.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(link.target.type_label()).small()
+                                            .color(Color32::from_rgb(120, 180, 240)));
+                                        ui.label(RichText::new(link.target.display_name()).small());
+                                        ui.label(RichText::new(link.kind.label()).small());
+                                        if ui.small_button("🗑").clicked() {
+                                            remove_link = Some(li);
+                                        }
+                                    });
+                                }
+                            }
+
+                            if let Some(li) = remove_link { obj.links.remove(li); }
+
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("添加关联:").small());
+                            ui.horizontal(|ui| {
+                                if ui.selectable_label(!self.new_link_is_node, "对象").clicked() { self.new_link_is_node = false; }
+                                if ui.selectable_label(self.new_link_is_node, "章节").clicked() { self.new_link_is_node = true; }
+                            });
+                            ui.horizontal(|ui| {
+                                let hint = if self.new_link_is_node { "节点标题" } else { "对象名称" };
+                                ui.add(egui::TextEdit::singleline(&mut self.new_link_name)
+                                    .hint_text(hint).desired_width(90.0));
+                                egui::ComboBox::from_id_salt("new_link_rel")
+                                    .selected_text(self.new_link_rel_kind.label())
+                                    .width(70.0)
+                                    .show_ui(ui, |ui| {
+                                        for k in RelationKind::all() {
+                                            ui.selectable_value(&mut self.new_link_rel_kind, k.clone(), k.label());
+                                        }
+                                    });
+                                if ui.button("➕").clicked() {
+                                    let name = self.new_link_name.trim().to_owned();
+                                    if !name.is_empty() { do_add_link = true; }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("备注:");
+                                ui.add(egui::TextEdit::singleline(&mut self.new_link_note)
+                                    .desired_width(f32::INFINITY));
+                            });
+                        });
+                    }
+                } else {
+                    ui.label(RichText::new("← 点击对象以编辑").color(Color32::GRAY));
                 }
             });
 
@@ -215,179 +253,14 @@ impl TextToolApp {
                 _ => {}
             }
         }
-
-        // ── Central: object editor + links ─────────────────────────────────────
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let Some(idx) = self.selected_obj_idx else {
-                ui.centered_and_justified(|ui| {
-                    if self.world_objects.is_empty() {
-                        ui.label(RichText::new("← 在左侧添加对象以开始编辑").color(Color32::GRAY));
-                    } else {
-                        ui.label(RichText::new("← 点击左侧对象名称以编辑").color(Color32::GRAY));
-                    }
-                });
-                return;
+        if do_add_link {
+            let name = self.new_link_name.trim().to_owned();
+            let target = if self.new_link_is_node {
+                LinkTarget::Node(name)
+            } else {
+                LinkTarget::Object(name)
             };
-
-            // Collect autocomplete lists before mutable borrow
-            let obj_names   = self.all_object_names();
-            let node_titles = self.all_struct_node_titles();
-
-            let mut do_sync = false;
-            let mut do_add_link = false;
-            let mut remove_link: Option<usize> = None;
-
-            if let Some(obj) = self.world_objects.get_mut(idx) {
-                egui::ScrollArea::vertical().id_salt("obj_editor_scroll").show(ui, |ui| {
-                    // Header
-                    ui.horizontal(|ui| {
-                        ui.heading(format!("{} {}", obj.kind.icon(), obj.name.clone()));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("💾 同步到 JSON").clicked() { do_sync = true; }
-                        });
-                    });
-                    ui.separator();
-
-                    // Kind selector
-                    ui.horizontal(|ui| {
-                        ui.label("类型:");
-                        for k in ObjectKind::all() {
-                            let sel = &obj.kind == k;
-                            if ui.selectable_label(sel,
-                                format!("{} {}", k.icon(), k.label())).clicked()
-                            {
-                                obj.kind = k.clone();
-                            }
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label("名称:");
-                        ui.text_edit_singleline(&mut obj.name);
-                    });
-
-                    ui.add_space(4.0);
-                    ui.label("描述 / 核心特质:");
-                    ui.add(egui::TextEdit::multiline(&mut obj.description)
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY));
-
-                    ui.add_space(4.0);
-                    ui.label("背景故事:");
-                    ui.add(egui::TextEdit::multiline(&mut obj.background)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY));
-
-                    ui.add_space(8.0);
-                    ui.separator();
-
-                    // ── Links (associations) ───────────────────────────────────
-                    ui.heading("关联");
-                    ui.label(RichText::new(
-                        "可关联其他对象（人物、场景…）或章节结构节点（章、节…）"
-                    ).color(Color32::from_gray(140)).small());
-                    ui.add_space(4.0);
-
-                    // Existing links table
-                    if obj.links.is_empty() {
-                        ui.label(RichText::new("暂无关联，请在下方添加").color(Color32::GRAY));
-                    } else {
-                        egui::Grid::new("links_grid")
-                            .num_columns(4)
-                            .spacing([8.0, 4.0])
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label(RichText::new("目标类型").small());
-                                ui.label(RichText::new("目标").small());
-                                ui.label(RichText::new("关联类型").small());
-                                ui.label(RichText::new("备注").small());
-                                ui.end_row();
-                                for (li, link) in obj.links.iter().enumerate() {
-                                    ui.label(RichText::new(link.target.type_label()).small()
-                                        .color(Color32::from_rgb(120, 180, 240)));
-                                    ui.label(RichText::new(link.target.display_name()).small());
-                                    ui.label(RichText::new(link.kind.label()).small());
-                                    ui.label(RichText::new(&link.note).small()
-                                        .color(Color32::from_gray(160)));
-                                    if ui.small_button("🗑").clicked() {
-                                        remove_link = Some(li);
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                    }
-
-                    if let Some(li) = remove_link { obj.links.remove(li); }
-
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.label("添加关联:");
-                    ui.horizontal(|ui| {
-                        // Toggle target type
-                        ui.label("类型:");
-                        if ui.selectable_label(!self.new_link_is_node, "对象").clicked() {
-                            self.new_link_is_node = false;
-                        }
-                        if ui.selectable_label(self.new_link_is_node, "章节").clicked() {
-                            self.new_link_is_node = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("目标名称:");
-                        let hint = if self.new_link_is_node { "节点标题" } else { "对象名称" };
-                        ui.add(egui::TextEdit::singleline(&mut self.new_link_name)
-                            .hint_text(hint)
-                            .desired_width(120.0));
-                        // Auto-complete hint
-                        let candidates: Vec<&str> = if self.new_link_is_node {
-                            node_titles.iter().map(|s| s.as_str()).collect()
-                        } else {
-                            obj_names.iter().map(|s| s.as_str()).collect()
-                        };
-                        if !self.new_link_name.is_empty() {
-                            let matches: Vec<&str> = candidates.iter()
-                                .filter(|c| c.contains(self.new_link_name.as_str()))
-                                .copied()
-                                .take(3)
-                                .collect();
-                            if !matches.is_empty() {
-                                ui.label(
-                                    RichText::new(matches.join(" / ")).small()
-                                        .color(Color32::from_gray(150))
-                                );
-                            }
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("关系类型:");
-                        egui::ComboBox::from_id_salt("new_link_rel")
-                            .selected_text(self.new_link_rel_kind.label())
-                            .width(90.0)
-                            .show_ui(ui, |ui| {
-                                for k in RelationKind::all() {
-                                    ui.selectable_value(
-                                        &mut self.new_link_rel_kind, k.clone(), k.label());
-                                }
-                            });
-                        ui.label("备注:");
-                        ui.add(egui::TextEdit::singleline(&mut self.new_link_note)
-                            .desired_width(100.0));
-                        if ui.button("➕").clicked() {
-                            let name = self.new_link_name.trim().to_owned();
-                            if !name.is_empty() { do_add_link = true; }
-                        }
-                    });
-                });
-            }
-
-            // Deferred mutations (outside the obj borrow)
-            if do_add_link {
-                let name = self.new_link_name.trim().to_owned();
-                let target = if self.new_link_is_node {
-                    LinkTarget::Node(name)
-                } else {
-                    LinkTarget::Object(name)
-                };
+            if let Some(idx) = self.selected_obj_idx {
                 if let Some(obj) = self.world_objects.get_mut(idx) {
                     obj.links.push(ObjectLink {
                         target,
@@ -395,28 +268,168 @@ impl TextToolApp {
                         note: self.new_link_note.trim().to_owned(),
                     });
                 }
-                self.new_link_name.clear();
-                self.new_link_note.clear();
+            }
+            self.new_link_name.clear();
+            self.new_link_note.clear();
+        }
+        if do_sync { self.sync_world_objects_to_json(); }
+
+        // ── Central: relationship canvas ───────────────────────────────────────
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("关系图谱");
+            ui.separator();
+
+            let sel_idx = self.selected_obj_idx;
+            if sel_idx.is_none() || self.world_objects.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label(
+                        RichText::new("← 在左侧选中一个对象\n可在此查看其关联关系图谱")
+                            .color(Color32::GRAY),
+                    );
+                });
+                return;
+            }
+            let idx = sel_idx.unwrap();
+            if idx >= self.world_objects.len() { return; }
+
+            let obj = &self.world_objects[idx];
+            let obj_name = obj.name.clone();
+            let links: Vec<(String, String, String)> = obj.links.iter()
+                .map(|l| (
+                    l.target.display_name().to_owned(),
+                    l.kind.label().to_owned(),
+                    l.target.type_label().to_owned(),
+                ))
+                .collect();
+
+            // Reverse-lookup: nodes that link back to this object
+            let reverse = Self::collect_nodes_linking_object(&self.struct_roots, &obj_name);
+
+            // Allocate the canvas area
+            let available = ui.available_size();
+            let (resp, painter) = ui.allocate_painter(available, egui::Sense::hover());
+            let rect = resp.rect;
+            let center = rect.center();
+
+            // Draw center node
+            let center_radius = 42.0_f32;
+            let node_color = Color32::from_rgb(0, 100, 180);
+            painter.circle_filled(center, center_radius, node_color);
+            painter.circle_stroke(center, center_radius, egui::Stroke::new(2.0, Color32::from_rgb(60, 160, 255)));
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                format!("{}\n({})", obj_name, obj.kind.label()),
+                egui::FontId::proportional(12.0),
+                Color32::WHITE,
+            );
+
+            // Draw linked nodes in a ring
+            let total = links.len() + reverse.len();
+            if total > 0 {
+                let radius = (available.x.min(available.y) * 0.38).max(120.0);
+                let mut i = 0usize;
+
+                // Forward links (direct)
+                for (target_name, rel_label, type_label) in &links {
+                    let angle = i as f32 * std::f32::consts::TAU / total as f32
+                        - std::f32::consts::FRAC_PI_2;
+                    let node_pos = center + egui::vec2(angle.cos() * radius, angle.sin() * radius);
+
+                    // Line from center to node
+                    painter.line_segment(
+                        [center + egui::vec2(angle.cos() * center_radius, angle.sin() * center_radius),
+                         node_pos - egui::vec2(angle.cos() * 24.0, angle.sin() * 24.0)],
+                        egui::Stroke::new(1.5, Color32::from_gray(130)),
+                    );
+                    // Arrowhead
+                    let tip = node_pos - egui::vec2(angle.cos() * 24.0, angle.sin() * 24.0);
+                    let perp = egui::vec2(-angle.sin(), angle.cos()) * 5.0;
+                    let back = egui::vec2(-angle.cos(), -angle.sin()) * 10.0;
+                    painter.add(egui::epaint::Shape::convex_polygon(
+                        vec![tip, tip + back + perp, tip + back - perp],
+                        Color32::from_gray(150),
+                        egui::Stroke::NONE,
+                    ));
+                    // Relation label on the line midpoint
+                    let mid = egui::pos2((center.x + node_pos.x) * 0.5, (center.y + node_pos.y) * 0.5);
+                    painter.text(
+                        mid,
+                        egui::Align2::CENTER_CENTER,
+                        rel_label,
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(180, 200, 150),
+                    );
+
+                    // Satellite node (color varies by type)
+                    let sat_color = if type_label == "章节" {
+                        Color32::from_rgb(80, 130, 60)
+                    } else {
+                        Color32::from_rgb(80, 80, 150)
+                    };
+                    painter.circle_filled(node_pos, 24.0, sat_color);
+                    painter.circle_stroke(node_pos, 24.0, egui::Stroke::new(1.5, Color32::from_gray(160)));
+                    painter.text(
+                        node_pos,
+                        egui::Align2::CENTER_CENTER,
+                        target_name,
+                        egui::FontId::proportional(10.0),
+                        Color32::WHITE,
+                    );
+                    i += 1;
+                }
+
+                // Reverse links (nodes that reference this object)
+                for rev_title in &reverse {
+                    let angle = i as f32 * std::f32::consts::TAU / total as f32
+                        - std::f32::consts::FRAC_PI_2;
+                    let node_pos = center + egui::vec2(angle.cos() * radius, angle.sin() * radius);
+
+                    painter.line_segment(
+                        [node_pos + egui::vec2(angle.cos() * 24.0, angle.sin() * 24.0),
+                         center - egui::vec2(angle.cos() * center_radius, angle.sin() * center_radius)],
+                        egui::Stroke::new(1.2, Color32::from_rgb(120, 180, 120)),
+                    );
+                    let mid = egui::pos2((center.x + node_pos.x) * 0.5, (center.y + node_pos.y) * 0.5);
+                    painter.text(
+                        mid,
+                        egui::Align2::CENTER_CENTER,
+                        "出现",
+                        egui::FontId::proportional(9.0),
+                        Color32::from_rgb(120, 200, 120),
+                    );
+                    painter.circle_filled(node_pos, 22.0, Color32::from_rgb(50, 100, 50));
+                    painter.circle_stroke(node_pos, 22.0, egui::Stroke::new(1.5, Color32::from_rgb(100, 200, 100)));
+                    painter.text(
+                        node_pos,
+                        egui::Align2::CENTER_CENTER,
+                        rev_title,
+                        egui::FontId::proportional(10.0),
+                        Color32::WHITE,
+                    );
+                    i += 1;
+                }
             }
 
-            if do_sync { self.sync_world_objects_to_json(); }
-
-            // ── Reverse-lookup: which structure nodes link to this object? ─────
-            // Show in a compact read-only section below the editor.
-            let obj_name = self.world_objects.get(idx).map(|o| o.name.clone()).unwrap_or_default();
-            let reverse = Self::collect_nodes_linking_object(&self.struct_roots, &obj_name);
-            if !reverse.is_empty() {
-                egui::TopBottomPanel::bottom("obj_reverse_links")
-                    .resizable(false)
-                    .show_inside(ui, |ui| {
-                        ui.separator();
-                        ui.label(
-                            RichText::new(format!("📌 章节结构中出现「{}」的节点: {}",
-                                obj_name, reverse.join("、")))
-                            .small()
-                            .color(Color32::from_rgb(120, 190, 120)),
-                        );
-                    });
+            // Legend (top-left overlay)
+            let legend_pos = rect.min + egui::vec2(8.0, 8.0);
+            let legend_bg = egui::Rect::from_min_size(legend_pos, egui::vec2(150.0, 60.0));
+            painter.rect_filled(legend_bg, 4.0, Color32::from_black_alpha(140));
+            painter.text(legend_pos + egui::vec2(6.0, 4.0), egui::Align2::LEFT_TOP,
+                "图例", egui::FontId::proportional(10.0), Color32::from_gray(180));
+            let items: &[(&str, Color32)] = &[
+                ("■ 关联对象", Color32::from_rgb(80, 80, 150)),
+                ("■ 关联章节", Color32::from_rgb(80, 130, 60)),
+                ("■ 出现于章节", Color32::from_rgb(50, 100, 50)),
+            ];
+            for (i, (label, color)) in items.iter().enumerate() {
+                painter.text(
+                    legend_pos + egui::vec2(6.0, 18.0 + i as f32 * 14.0),
+                    egui::Align2::LEFT_TOP,
+                    *label,
+                    egui::FontId::proportional(9.0),
+                    *color,
+                );
             }
         });
     }
