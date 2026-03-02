@@ -516,31 +516,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_outline_empty() {
-        let result = parse_outline("");
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_parse_outline_headings() {
-        let md = "# Chapter 1\n## Scene 1\n## Scene 2\n# Chapter 2\n";
-        let result = parse_outline(md);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].title, "Chapter 1");
-        assert_eq!(result[0].children.len(), 2);
-        assert_eq!(result[0].children[0].title, "Scene 1");
-        assert_eq!(result[1].title, "Chapter 2");
-        assert!(result[1].children.is_empty());
-    }
-
-    #[test]
-    fn test_parse_outline_no_headings() {
-        let md = "Just some text\nNo headings here.";
-        let result = parse_outline(md);
-        assert!(result.is_empty());
-    }
-
-    #[test]
     fn test_open_file_is_markdown() {
         let f = OpenFile::new(PathBuf::from("test.md"), String::new());
         assert!(f.is_markdown());
@@ -987,7 +962,7 @@ mod tests {
         std::fs::write(dir.join("ignore.txt"), "主角 should not be found").unwrap();
 
         let mut results = Vec::new();
-        TextToolApp::search_dir(&dir, "主角", &mut results);
+        crate::app::search::search_dir(&dir, "主角", &mut results);
 
         // Should find matches in .md and .json but not .txt
         assert!(!results.is_empty());
@@ -1011,7 +986,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("file2.json"), "{}").unwrap();
 
-        TextToolApp::copy_dir_all(&src, &dst).unwrap();
+        crate::app::search::copy_dir_all(&src, &dst).unwrap();
 
         assert!(dst.join("file1.md").exists());
         assert!(dst.join("subdir").join("file2.json").exists());
