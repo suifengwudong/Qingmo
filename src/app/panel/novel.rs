@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use egui::{Context, RichText, Color32};
+use egui::{Context, RichText, Color32, Key};
 use super::super::{TextToolApp, FileNode, StructNode, FileTreeMode, rfd_pick_folder};
 use super::markdown::render_markdown;
 
@@ -10,6 +10,9 @@ impl TextToolApp {
         let mut open_left: Option<PathBuf> = None;
         let mut open_right: Option<PathBuf> = None;
         let mut new_in: Option<PathBuf> = None;
+        let mut toggle_path: Option<PathBuf> = None;
+        let mut select_path: Option<PathBuf> = None;
+        let mut rename_path: Option<PathBuf> = None;
 
         egui::SidePanel::left("file_tree")
             .resizable(true)
@@ -63,15 +66,25 @@ impl TextToolApp {
                             }
                         }
                     });
+                    // F2 hint when a file is selected
+                    if self.selected_file_path.is_some() && self.file_tree_mode == FileTreeMode::Files {
+                        ui.label(
+                            RichText::new("F2 重命名选中文件")
+                                .small().color(Color32::from_gray(120)),
+                        );
+                    }
                     ui.separator();
 
                     egui::ScrollArea::vertical().id_salt("file_tree_scroll").show(ui, |ui| {
                         if self.file_tree_mode == FileTreeMode::Files {
                             let nodes = self.file_tree.clone();
+                            let selected = &self.selected_file_path;
                             for node in &nodes {
                                 Self::draw_tree_node(
                                     ui, node, 0,
                                     &mut open_left, &mut open_right, &mut new_in,
+                                    &mut toggle_path, selected, &mut select_path,
+                                    &mut rename_path,
                                 );
                             }
                         } else {
@@ -110,6 +123,38 @@ impl TextToolApp {
         if let Some(p) = new_in {
             self.new_file(p);
         }
+        if let Some(p) = toggle_path {
+            Self::toggle_expand_in_tree(&mut self.file_tree, &p);
+        }
+        if let Some(p) = select_path {
+            self.selected_file_path = Some(p);
+        }
+        if let Some(p) = rename_path {
+            let current_name = p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            self.selected_file_path = Some(p.clone());
+            self.rename_dialog = Some(crate::app::RenameDialog {
+                path: p,
+                new_name: current_name,
+            });
+        }
+
+        // Handle F2 key: open rename dialog for selected file when panel is focused
+        if self.rename_dialog.is_none() {
+            let f2 = ctx.input(|i| !i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(Key::F2));
+            if f2 {
+                if let Some(path) = self.selected_file_path.clone() {
+                    let current_name = path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    self.rename_dialog = Some(crate::app::RenameDialog {
+                        path,
+                        new_name: current_name,
+                    });
+                }
+            }
+        }
     }
 
     /// Render the chapter structure tree. Clicking a leaf chapter opens its `.md` file.
@@ -120,28 +165,18 @@ impl TextToolApp {
         open_left: &mut Option<PathBuf>,
         project_root: &Option<std::path::PathBuf>,
     ) {
-        for node in nodes {
-            let indent = depth as f32 * 14.0;
-            let has_children = !node.children.is_empty();
+        for (idx, node) in nodes.iter().enumerate() {
             let done_mark = if node.done { "✅ " } else { "" };
             let label = format!("{} {}{}", node.kind.icon(), done_mark, node.title);
 
-            ui.horizontal(|ui| {
-                ui.add_space(indent);
-                if has_children {
-                    // Branch node: show as non-clickable label in muted color
-                    ui.label(
-                        RichText::new(&label)
-                            .color(Color32::from_gray(200))
-                            .strong(),
-                    );
-                } else {
-                    // Leaf node: clickable, tries to open the corresponding .md
+            if node.children.is_empty() {
+                // Leaf node: clickable, tries to open the corresponding .md
+                ui.horizontal(|ui| {
+                    ui.add_space(depth as f32 * 14.0);
                     let resp = ui.selectable_label(false,
                         RichText::new(&label).color(Color32::from_gray(230))
                     );
                     if resp.clicked() || resp.double_clicked() {
-                        // Look for matching .md file in Content/
                         if let Some(root) = project_root {
                             let needle = node.title.to_lowercase();
                             if let Some(path) = find_md_for_title(&root.join("Content"), &needle) {
@@ -154,11 +189,17 @@ impl TextToolApp {
                     } else {
                         node.summary.clone()
                     });
-                }
-            });
-
-            if has_children {
-                Self::draw_chapter_tree(ui, &node.children, depth + 1, open_left, project_root);
+                });
+            } else {
+                // Branch node: collapsible header (provides its own indentation)
+                egui::CollapsingHeader::new(
+                    RichText::new(&label).color(Color32::from_gray(200)).strong()
+                )
+                .id_salt(format!("ch_tree_{}_{}", depth, idx))
+                .default_open(true)
+                .show(ui, |ui| {
+                    Self::draw_chapter_tree(ui, &node.children, depth + 1, open_left, project_root);
+                });
             }
         }
     }
@@ -170,13 +211,24 @@ impl TextToolApp {
         open_left: &mut Option<PathBuf>,
         open_right: &mut Option<PathBuf>,
         new_in: &mut Option<PathBuf>,
+        toggle_path: &mut Option<PathBuf>,
+        selected_path: &Option<PathBuf>,
+        select_path: &mut Option<PathBuf>,
+        rename_path: &mut Option<PathBuf>,
     ) {
         let indent = depth as f32 * 12.0;
         ui.horizontal(|ui| {
             ui.add_space(indent);
             if node.is_dir {
                 let icon = if node.expanded { "▼" } else { "▶" };
-                ui.label(format!("{icon} 📁 {}", node.name));
+                let resp = ui.selectable_label(
+                    false,
+                    format!("{icon} 📁 {}", node.name),
+                );
+                if resp.clicked() {
+                    *toggle_path = Some(node.path.clone());
+                }
+                resp.on_hover_text(if node.expanded { "点击折叠" } else { "点击展开" });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("➕").on_hover_text("新建文件").clicked() {
                         *new_in = Some(node.path.clone());
@@ -190,7 +242,8 @@ impl TextToolApp {
                 } else {
                     "📃"
                 };
-                let resp = ui.selectable_label(false, format!("{icon} {}", node.name));
+                let is_selected = selected_path.as_deref() == Some(node.path.as_path());
+                let resp = ui.selectable_label(is_selected, format!("{icon} {}", node.name));
                 resp.context_menu(|ui| {
                     if ui.button("在左侧打开").clicked() {
                         *open_left = Some(node.path.clone());
@@ -200,7 +253,15 @@ impl TextToolApp {
                         *open_right = Some(node.path.clone());
                         ui.close_menu();
                     }
+                    ui.separator();
+                    if ui.button("重命名 (F2)").clicked() {
+                        *rename_path = Some(node.path.clone());
+                        ui.close_menu();
+                    }
                 });
+                if resp.clicked() {
+                    *select_path = Some(node.path.clone());
+                }
                 if resp.double_clicked() {
                     // default: md → left, json → right
                     if node.name.ends_with(".json") {
@@ -209,15 +270,30 @@ impl TextToolApp {
                         *open_left = Some(node.path.clone());
                     }
                 }
-                resp.on_hover_text("双击打开 / 右键菜单");
+                resp.on_hover_text("单击选中  双击打开  右键菜单");
             }
         });
 
         if node.is_dir && node.expanded {
             for child in &node.children {
-                Self::draw_tree_node(ui, child, depth + 1, open_left, open_right, new_in);
+                Self::draw_tree_node(ui, child, depth + 1, open_left, open_right, new_in,
+                    toggle_path, selected_path, select_path, rename_path);
             }
         }
+    }
+
+    /// Toggle the `expanded` flag of the tree node matching `path`.
+    pub(in crate::app) fn toggle_expand_in_tree(nodes: &mut Vec<FileNode>, path: &std::path::Path) -> bool {
+        for node in nodes.iter_mut() {
+            if node.path == path {
+                node.expanded = !node.expanded;
+                return true;
+            }
+            if node.is_dir && Self::toggle_expand_in_tree(&mut node.children, path) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(in crate::app) fn draw_editors(&mut self, ctx: &Context) {
@@ -243,7 +319,7 @@ impl TextToolApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Tab=缩进  Ctrl+B=粗体  Ctrl+I=斜体  Ctrl+Z=撤销  Ctrl+S=保存")
+                        RichText::new("Tab=缩进  Ctrl+B=粗体  Ctrl+I=斜体  Ctrl+Z=撤销  Ctrl+S=保存  Ctrl+滚轮=调整预览字体")
                             .small()
                             .color(Color32::from_gray(120)),
                     );

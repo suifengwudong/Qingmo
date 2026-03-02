@@ -1,6 +1,9 @@
 use egui::{Context, RichText, Color32, Key};
 use super::{TextToolApp, Panel, rfd_pick_folder, rfd_save_file};
 
+/// Minimum Ctrl+scroll delta (in points) required to adjust the font size by one step.
+const CTRL_SCROLL_THRESHOLD: f32 = 1.0;
+
 impl TextToolApp {
     // ── UI helpers ────────────────────────────────────────────────────────────
 
@@ -189,7 +192,7 @@ impl TextToolApp {
                 ui.label(RichText::new(&self.status).color(status_color));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Ctrl+S 保存  Ctrl+Z 撤销  Ctrl+Shift+S 保存右侧")
+                        RichText::new("Ctrl+S 保存  Ctrl+Z 撤销  Ctrl+Shift+S 保存右侧  Ctrl+滚轮 缩放预览")
                             .color(Color32::from_gray(120))
                             .small(),
                     );
@@ -241,6 +244,7 @@ impl TextToolApp {
         let input = ctx.input(|i| {
             let ctrl = i.modifiers.ctrl || i.modifiers.command;
             let shift = i.modifiers.shift;
+            let ctrl_scroll = if ctrl { i.smooth_scroll_delta.y } else { 0.0 };
             (
                 ctrl && !shift && i.key_pressed(Key::S),           // Ctrl+S
                 ctrl && shift && i.key_pressed(Key::S),            // Ctrl+Shift+S
@@ -249,6 +253,11 @@ impl TextToolApp {
                 ctrl && !shift && i.key_pressed(Key::B),           // Ctrl+B
                 ctrl && !shift && i.key_pressed(Key::I),           // Ctrl+I
                 !ctrl && !shift && i.key_pressed(Key::Tab),        // Tab
+                ctrl && i.key_pressed(Key::Equals),                 // Ctrl++/=
+                ctrl && i.key_pressed(Key::Minus),                  // Ctrl+-
+                ctrl && i.key_pressed(Key::Num0),                   // Ctrl+0 reset
+                ctrl_scroll,                                        // Ctrl+scroll
+                !ctrl && !shift && i.key_pressed(Key::F2),         // F2 rename
             )
         });
         if input.0 {
@@ -286,6 +295,40 @@ impl TextToolApp {
         // Tab: insert configurable number of spaces at cursor in left editor
         if input.6 && self.last_focused_left {
             self.insert_tab_spaces(ctx);
+        }
+        // Ctrl++ / Ctrl+scroll up: increase preview font size
+        if input.7 {
+            self.md_settings.preview_font_size = (self.md_settings.preview_font_size + 1.0).min(36.0);
+            self.save_config();
+        }
+        // Ctrl+- / Ctrl+scroll down: decrease preview font size
+        if input.8 {
+            self.md_settings.preview_font_size = (self.md_settings.preview_font_size - 1.0).max(8.0);
+            self.save_config();
+        }
+        // Ctrl+0: reset preview font size
+        if input.9 {
+            self.md_settings.preview_font_size = crate::app::MarkdownSettings::default().preview_font_size;
+            self.save_config();
+        }
+        // Ctrl+scroll: adjust preview font size
+        if input.10.abs() > CTRL_SCROLL_THRESHOLD {
+            let delta = if input.10 > 0.0 { 1.0_f32 } else { -1.0_f32 };
+            self.md_settings.preview_font_size = (self.md_settings.preview_font_size + delta)
+                .clamp(8.0, 36.0);
+            self.save_config();
+        }
+        // F2: rename selected file in navigation
+        if input.11 {
+            if let Some(path) = self.selected_file_path.clone() {
+                let current_name = path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                self.rename_dialog = Some(crate::app::RenameDialog {
+                    path,
+                    new_name: current_name,
+                });
+            }
         }
     }
 
@@ -390,17 +433,27 @@ impl TextToolApp {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.label("预览字体大小:");
+                    let prev_size = self.md_settings.preview_font_size;
                     ui.add(
-                        egui::Slider::new(&mut self.md_settings.preview_font_size, 10.0..=26.0)
+                        egui::Slider::new(&mut self.md_settings.preview_font_size, 8.0..=36.0)
                             .step_by(1.0)
                             .suffix(" px"),
                     );
+                    if (self.md_settings.preview_font_size - prev_size).abs() > f32::EPSILON {
+                        self.save_config();
+                    }
                 });
+                ui.label(
+                    RichText::new("Ctrl+滚轮 / Ctrl++ / Ctrl+- 也可实时调整字体大小")
+                        .small().color(Color32::from_gray(140)),
+                );
                 ui.add_space(2.0);
+                let prev = self.md_settings.default_to_preview;
                 ui.checkbox(
                     &mut self.md_settings.default_to_preview,
                     "打开 Markdown 文件时默认切换到预览模式",
                 );
+                if self.md_settings.default_to_preview != prev { self.save_config(); }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -416,6 +469,7 @@ impl TextToolApp {
                 if self.md_settings.hide_json != prev_hide {
                     // Immediately re-build the tree with the new filter setting.
                     self.refresh_tree();
+                    self.save_config();
                 }
 
                 ui.add_space(6.0);
@@ -426,15 +480,19 @@ impl TextToolApp {
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
                     ui.label("Tab 缩进空格数:");
+                    let prev_tab = self.md_settings.tab_size;
                     let mut tab_size = self.md_settings.tab_size as u32;
                     ui.add(egui::Slider::new(&mut tab_size, 1..=8).step_by(1.0));
                     self.md_settings.tab_size = tab_size as u8;
+                    if self.md_settings.tab_size != prev_tab { self.save_config(); }
                 });
                 ui.add_space(2.0);
+                let prev_ae = self.md_settings.auto_extract_structure;
                 ui.checkbox(
                     &mut self.md_settings.auto_extract_structure,
                     "Ctrl+S 保存时自动从 Markdown 标题提取章节结构",
                 );
+                if self.md_settings.auto_extract_structure != prev_ae { self.save_config(); }
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -442,30 +500,74 @@ impl TextToolApp {
                 // ── Data sync ─────────────────────────────────────────────────
                 ui.label(RichText::new("数据同步").strong());
                 ui.add_space(2.0);
+                let prev_al = self.auto_load_from_files;
                 ui.checkbox(
                     &mut self.auto_load_from_files,
                     "打开项目时自动从文件反向同步数据",
                 );
+                if self.auto_load_from_files != prev_al { self.save_config(); }
 
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("重置默认值").clicked() {
-                        self.md_settings = crate::app::MarkdownSettings::default();
-                        self.refresh_tree();
+                if ui.button("重置默认值").clicked() {
+                    self.md_settings = crate::app::MarkdownSettings::default();
+                    self.refresh_tree();
+                    self.save_config();
+                }
+            });
+
+        // Detect window close via X button and save config
+        if !open && self.show_settings_window {
+            self.save_config();
+        }
+        self.show_settings_window = open;
+    }
+
+    /// Draw the rename file dialog (triggered by F2 or context menu).
+    pub(super) fn draw_rename_dialog(&mut self, ctx: &Context) {
+        let mut do_rename: Option<(std::path::PathBuf, String)> = None;
+        let mut close = false;
+
+        if let Some(dlg) = &mut self.rename_dialog {
+            egui::Window::new("重命名文件")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("重命名: {}", dlg.path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()));
+                    let resp = ui.text_edit_singleline(&mut dlg.new_name);
+                    resp.request_focus();
+                    if resp.lost_focus() && ctx.input(|i| i.key_pressed(Key::Escape)) {
+                        close = true;
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("关闭").clicked() {
-                            self.show_settings_window = false;
-                            self.save_config();
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确认").clicked()
+                            || (resp.lost_focus() && ctx.input(|i| i.key_pressed(Key::Enter)))
+                        {
+                            let new_name = dlg.new_name.trim().to_owned();
+                            if !new_name.is_empty() {
+                                do_rename = Some((dlg.path.clone(), new_name));
+                            }
+                            close = true;
+                        }
+                        if ui.button("取消").clicked() {
+                            close = true;
                         }
                     });
                 });
-            });
+        }
 
-        self.show_settings_window = open;
+        if close {
+            self.rename_dialog = None;
+        }
+        if let Some((path, new_name)) = do_rename {
+            self.rename_file(&path, &new_name);
+        }
     }
 
     /// Draw the floating full-text search window (Ctrl+Shift+F).
