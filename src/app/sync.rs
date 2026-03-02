@@ -231,18 +231,27 @@ impl TextToolApp {
             return;
         };
         let content = root.join("Content");
-        let _ = std::fs::create_dir_all(&content);
+        if let Err(e) = std::fs::create_dir_all(&content) {
+            self.status = format!("创建 Content 目录失败: {e}");
+            return;
+        }
         let chapters = ["序章.md", "第一章.md", "第二章.md", "第三章.md", "尾声.md"];
+        let mut errors = Vec::new();
         for name in &chapters {
             let path = content.join(name);
             if !path.exists() {
                 let stem = Path::new(name).file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                let _ = std::fs::write(&path, format!("# {}\n\n", stem));
+                if let Err(e) = std::fs::write(&path, format!("# {}\n\n", stem)) {
+                    errors.push(format!("{name}: {e}"));
+                }
             }
         }
-        // Populate structure from folders
+        if !errors.is_empty() {
+            self.status = format!("模板创建部分失败: {}", errors.join("; "));
+            return;
+        }
         self.sync_struct_from_folders();
         self.refresh_tree();
         self.status = "已创建短篇模板（单层章节结构）".to_owned();
@@ -256,23 +265,36 @@ impl TextToolApp {
             return;
         };
         let content = root.join("Content");
-        let _ = std::fs::create_dir_all(&content);
+        if let Err(e) = std::fs::create_dir_all(&content) {
+            self.status = format!("创建 Content 目录失败: {e}");
+            return;
+        }
         let volumes: &[(&str, &[&str])] = &[
             ("第一卷", &["序章.md", "第一章.md", "第二章.md"]),
             ("第二卷", &["第一章.md", "第二章.md", "第三章.md"]),
         ];
+        let mut errors = Vec::new();
         for (vol, chapters) in volumes {
             let vol_dir = content.join(vol);
-            let _ = std::fs::create_dir_all(&vol_dir);
+            if let Err(e) = std::fs::create_dir_all(&vol_dir) {
+                errors.push(format!("{vol}: {e}"));
+                continue;
+            }
             for name in *chapters {
                 let path = vol_dir.join(name);
                 if !path.exists() {
                     let stem = Path::new(name).file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    let _ = std::fs::write(&path, format!("# {}\n\n", stem));
+                    if let Err(e) = std::fs::write(&path, format!("# {}\n\n", stem)) {
+                        errors.push(format!("{vol}/{name}: {e}"));
+                    }
                 }
             }
+        }
+        if !errors.is_empty() {
+            self.status = format!("模板创建部分失败: {}", errors.join("; "));
+            return;
         }
         self.sync_struct_from_folders();
         self.refresh_tree();
