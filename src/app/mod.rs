@@ -495,6 +495,17 @@ impl TextToolApp {
         AgentBackend { skills: self.build_skill_set() }
     }
 
+    /// Return the human-readable name of the currently-selected LLM backend.
+    /// Uses the `LlmBackend::name()` method on each concrete type.
+    pub(super) fn current_backend_name(&self) -> &'static str {
+        match self.llm_backend_idx {
+            1 => ApiBackend.name(),
+            2 => LocalServerBackend.name(),
+            3 => AgentBackend::BACKEND_NAME,
+            _ => MockBackend.name(),
+        }
+    }
+
     /// Return the LLM backend that corresponds to `self.llm_backend_idx`.
     ///
     /// | idx | Backend |

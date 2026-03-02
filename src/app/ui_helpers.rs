@@ -117,23 +117,49 @@ impl TextToolApp {
     pub(super) fn draw_toolbar(&mut self, ctx: &Context) {
         egui::SidePanel::left("toolbar")
             .resizable(false)
-            .exact_width(48.0)
+            .exact_width(52.0)
             .show(ctx, |ui| {
+                // Toolbar background tint
+                let rect = ui.available_rect_before_wrap();
+                ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(30, 30, 35));
+
                 ui.vertical_centered(|ui| {
                     ui.add_space(8.0);
                     for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::Llm] {
                         let selected = self.active_panel == panel;
+                        // Left accent bar for selected item
+                        if selected {
+                            let r = ui.next_widget_position();
+                            let accent_rect = egui::Rect::from_min_size(
+                                r,
+                                egui::vec2(3.0, 42.0),
+                            );
+                            ui.painter().rect_filled(
+                                accent_rect, 0.0, Color32::from_rgb(0, 150, 220),
+                            );
+                        }
+                        let text_color = if selected {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_gray(160)
+                        };
                         let btn = egui::Button::new(
-                            RichText::new(panel.icon()).size(22.0)
+                            RichText::new(panel.icon()).size(20.0).color(text_color)
                         )
                         .fill(if selected {
-                            Color32::from_rgb(0, 122, 204)
+                            Color32::from_rgb(45, 45, 55)
                         } else {
                             Color32::TRANSPARENT
                         })
+                        .stroke(if selected {
+                            egui::Stroke::new(1.0, Color32::from_rgb(0, 150, 220))
+                        } else {
+                            egui::Stroke::NONE
+                        })
+                        .rounding(4.0)
                         .frame(true);
 
-                        if ui.add_sized([40.0, 40.0], btn)
+                        if ui.add_sized([44.0, 42.0], btn)
                             .on_hover_text(panel.label())
                             .clicked()
                         {
@@ -148,7 +174,15 @@ impl TextToolApp {
     pub(super) fn draw_status_bar(&self, ctx: &Context) {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&self.status).color(Color32::from_gray(180)));
+                // Color-code status by content
+                let status_color = if self.status.contains("失败") || self.status.contains("错误") {
+                    Color32::from_rgb(220, 80, 80)
+                } else if self.status.contains("完成") || self.status.contains("已保存") || self.status.contains("已同步") || self.status.contains("已加载") {
+                    Color32::from_rgb(100, 200, 120)
+                } else {
+                    Color32::from_gray(180)
+                };
+                ui.label(RichText::new(&self.status).color(status_color));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         RichText::new("Ctrl+S 保存  Ctrl+Z 撤销  Ctrl+Shift+S 保存右侧")
