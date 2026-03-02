@@ -17,8 +17,7 @@ impl TextToolApp {
         let mut do_add_link = false;
         let mut remove_link: Option<usize> = None;
 
-        // Collect autocomplete lists before any mutable borrow (used for future autocomplete)
-        let _obj_names = self.all_object_names();
+        // Collect autocomplete before any mutable borrow (unused for now but needed for future autocomplete)
 
         egui::SidePanel::left("obj_list")
             .resizable(true)
