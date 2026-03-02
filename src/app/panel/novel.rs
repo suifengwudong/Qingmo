@@ -312,7 +312,6 @@ impl TextToolApp {
     }
 
     pub(in crate::app) fn draw_editors(&mut self, ctx: &Context) {
-        let mut do_extract_struct = false;
         let mut do_sync_folders   = false;
         let mut switch_to_obj_idx: Option<usize> = None;
 
@@ -335,6 +334,15 @@ impl TextToolApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.small_button("⊞").on_hover_text("在「世界对象」面板管理").clicked() {
                             switch_to_obj_idx = selected_obj; // keep selection, just switch panel
+                        }
+                        // Quick-add: add a new unnamed object and switch to edit it
+                        if ui.small_button("➕").on_hover_text("快速添加新对象（切换到世界对象面板编辑）").clicked() {
+                            let idx = self.world_objects.len();
+                            self.world_objects.push(crate::app::WorldObject::new(
+                                &format!("新对象{}", idx + 1),
+                                crate::app::ObjectKind::Character,
+                            ));
+                            switch_to_obj_idx = Some(idx);
                         }
                     });
                 });
@@ -412,14 +420,8 @@ impl TextToolApp {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("编辑区").strong());
                 ui.separator();
-                if ui.button("提取结构")
-                    .on_hover_text("从 Markdown 标题 (#/##/###) 提取章节结构到「章节结构」面板")
-                    .clicked()
-                {
-                    do_extract_struct = true;
-                }
-                if ui.button("文件夹同步结构")
-                    .on_hover_text("根据 Content/ 文件夹层级自动生成章节结构")
+                if ui.button("同步章节结构")
+                    .on_hover_text("根据 Content/ 文件夹层级自动同步章节结构\n（每个.md = 一章，子目录 = 卷/纲）")
                     .clicked()
                 {
                     do_sync_folders = true;
@@ -527,7 +529,6 @@ impl TextToolApp {
             self.selected_obj_idx = Some(idx);
             self.active_panel = Panel::Objects;
         }
-        if do_extract_struct { self.extract_structure_from_left(); }
         if do_sync_folders   { self.sync_struct_from_folders(); }
     }
 }

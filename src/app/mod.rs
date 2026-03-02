@@ -167,6 +167,17 @@ pub struct TextToolApp {
     pub(super) show_search: bool,
     pub(super) search_query: String,
     pub(super) search_results: Vec<SearchResult>,
+
+    // ── Structure panel auto-save ─────────────────────────────────────────────
+    /// Serialised JSON snapshot of `struct_roots` as of the last save.
+    /// Used to detect changes and trigger auto-save without a dirty flag.
+    pub(super) struct_json_snapshot: Option<String>,
+
+    // ── Panel-switch tracking (for Structure auto-load) ───────────────────────
+    pub(super) last_active_panel: Panel,
+
+    // ── Novel template dialog ─────────────────────────────────────────────────
+    pub(super) show_template_dialog: bool,
 }
 
 #[derive(Debug)]
@@ -265,6 +276,9 @@ impl TextToolApp {
             show_search: false,
             search_query: String::new(),
             search_results: vec![],
+            struct_json_snapshot: None,
+            last_active_panel: Panel::Novel,
+            show_template_dialog: false,
         };
 
         // Apply saved configuration (LLM settings, MD settings, last project).
@@ -662,6 +676,23 @@ impl eframe::App for TextToolApp {
         self.draw_toolbar(ctx);
 
         // Content area switches based on active panel
+        // ── Auto-load Structure panel on first switch ─────────────────────────
+        if self.active_panel == Panel::Structure
+            && self.last_active_panel != Panel::Structure
+            && self.project_root.is_some()
+        {
+            // Silently try to load chapter structure; if file is missing, do nothing.
+            if let Ok((text, _)) = self.read_project_file("Design", "章节结构.json") {
+                if let Ok(nodes) = serde_json::from_str::<Vec<StructNode>>(&text) {
+                    self.struct_roots = nodes;
+                    self.selected_node_path.clear();
+                }
+            }
+            // Reset snapshot so the freshly-loaded data is not immediately re-saved.
+            self.struct_json_snapshot = serde_json::to_string(&self.struct_roots).ok();
+        }
+        self.last_active_panel = self.active_panel;
+
         match self.active_panel {
             Panel::Novel => {
                 self.draw_file_tree(ctx);
@@ -672,6 +703,23 @@ impl eframe::App for TextToolApp {
             }
             Panel::Structure => {
                 self.draw_structure_panel(ctx);
+
+                // ── Auto-save structure when changed ──────────────────────────
+                if self.project_root.is_some() {
+                    if let Ok(current_json) = serde_json::to_string(&self.struct_roots) {
+                        let changed = self.struct_json_snapshot.as_deref() != Some(&current_json);
+                        if changed {
+                            self.struct_json_snapshot = Some(current_json.clone());
+                            // Write silently — status bar only if there's an error.
+                            if let Some(root) = &self.project_root.clone() {
+                                let path = root.join("Design").join("章节结构.json");
+                                if let Ok(pretty) = serde_json::to_string_pretty(&self.struct_roots) {
+                                    let _ = std::fs::write(&path, pretty);
+                                }
+                            }
+                        }
+                    }
+                }
             }
             Panel::Llm => {
                 self.draw_llm_panel(ctx);
@@ -684,6 +732,7 @@ impl eframe::App for TextToolApp {
         self.draw_delete_confirm_dialog(ctx);
         self.draw_settings_window(ctx);
         self.draw_search_window(ctx);
+        self.draw_template_dialog(ctx);
     }
 }
 

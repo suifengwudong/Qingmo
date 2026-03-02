@@ -205,7 +205,11 @@ impl TextToolApp {
 
     /// Build a chapter structure from the project's `Content/` folder hierarchy.
     ///
-    /// Subdirectories → `Volume` nodes; `.md` files → `Chapter` nodes.
+    /// Convention (Req 2):
+    ///   • Each `.md` file = one chapter
+    ///   • Subdirectories = higher-level structural nodes (Volume, Outline…)
+    ///   • Sub-sections within a `.md` file are below the chapter level and are
+    ///     represented by headings inside the file, not by the tree here.
     pub(super) fn sync_struct_from_folders(&mut self) {
         let Some(root) = self.project_root.clone() else {
             self.status = "请先打开一个项目".to_owned();
@@ -216,7 +220,63 @@ impl TextToolApp {
         let count = count_nodes(&nodes);
         self.struct_roots = nodes;
         self.selected_node_path.clear();
-        self.status = format!("已从文件夹结构提取 {count} 个章节节点");
+        self.status = format!("已从文件夹结构同步 {count} 个章节节点");
+    }
+
+    /// Create a short-novel project template under `self.project_root`:
+    /// flat Content/ structure (single layer — only `.md` chapters, no subdirs).
+    pub(super) fn apply_template_short(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.status = "请先打开一个项目".to_owned();
+            return;
+        };
+        let content = root.join("Content");
+        let _ = std::fs::create_dir_all(&content);
+        let chapters = ["序章.md", "第一章.md", "第二章.md", "第三章.md", "尾声.md"];
+        for name in &chapters {
+            let path = content.join(name);
+            if !path.exists() {
+                let stem = Path::new(name).file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let _ = std::fs::write(&path, format!("# {}\n\n", stem));
+            }
+        }
+        // Populate structure from folders
+        self.sync_struct_from_folders();
+        self.refresh_tree();
+        self.status = "已创建短篇模板（单层章节结构）".to_owned();
+    }
+
+    /// Create a long-novel project template under `self.project_root`:
+    /// two-layer Content/ structure (Volume subdirs → Chapter `.md` files).
+    pub(super) fn apply_template_long(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.status = "请先打开一个项目".to_owned();
+            return;
+        };
+        let content = root.join("Content");
+        let _ = std::fs::create_dir_all(&content);
+        let volumes: &[(&str, &[&str])] = &[
+            ("第一卷", &["序章.md", "第一章.md", "第二章.md"]),
+            ("第二卷", &["第一章.md", "第二章.md", "第三章.md"]),
+        ];
+        for (vol, chapters) in volumes {
+            let vol_dir = content.join(vol);
+            let _ = std::fs::create_dir_all(&vol_dir);
+            for name in *chapters {
+                let path = vol_dir.join(name);
+                if !path.exists() {
+                    let stem = Path::new(name).file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let _ = std::fs::write(&path, format!("# {}\n\n", stem));
+                }
+            }
+        }
+        self.sync_struct_from_folders();
+        self.refresh_tree();
+        self.status = "已创建长篇模板（卷→章二层结构）".to_owned();
     }
 }
 
@@ -374,6 +434,63 @@ mod tests {
         // Dir 第一卷 comes after file 序章 (dirs sort first in the tree)
         assert!(nodes.iter().any(|n| n.title == "第一卷" && n.kind == StructKind::Volume));
         assert!(nodes.iter().any(|n| n.title == "序章"   && n.kind == StructKind::Chapter));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── Template helpers ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_short_template_creates_flat_structure() {
+        let dir = std::env::temp_dir().join("qingmo_test_short_tpl");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+
+        // Simulate apply_template_short logic (no TextToolApp needed)
+        let content = dir.join("Content");
+        let chapters = ["序章.md", "第一章.md", "第二章.md", "第三章.md", "尾声.md"];
+        for name in &chapters {
+            let path = content.join(name);
+            let stem = std::path::Path::new(name).file_stem()
+                .map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            std::fs::write(&path, format!("# {}\n\n", stem)).unwrap();
+        }
+
+        // Verify all .md files exist and Content has no subdirs
+        let nodes = build_struct_from_dir(&content);
+        assert_eq!(nodes.len(), chapters.len());
+        assert!(nodes.iter().all(|n| n.kind == StructKind::Chapter));
+        assert!(nodes.iter().all(|n| n.children.is_empty())); // flat, no sub-volumes
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_long_template_creates_two_layer_structure() {
+        let dir = std::env::temp_dir().join("qingmo_test_long_tpl");
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+
+        let content = dir.join("Content");
+        let volumes: &[(&str, &[&str])] = &[
+            ("第一卷", &["序章.md", "第一章.md", "第二章.md"]),
+            ("第二卷", &["第一章.md", "第二章.md", "第三章.md"]),
+        ];
+        for (vol, chapters) in volumes {
+            let vol_dir = content.join(vol);
+            std::fs::create_dir_all(&vol_dir).unwrap();
+            for name in *chapters {
+                let stem = std::path::Path::new(name).file_stem()
+                    .map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                std::fs::write(vol_dir.join(name), format!("# {}\n\n", stem)).unwrap();
+            }
+        }
+
+        let nodes = build_struct_from_dir(&content);
+        assert_eq!(nodes.len(), 2, "Should have 2 volumes");
+        assert!(nodes.iter().all(|n| n.kind == StructKind::Volume));
+        assert_eq!(nodes[0].children.len(), 3, "第一卷 should have 3 chapters");
+        assert_eq!(nodes[1].children.len(), 3, "第二卷 should have 3 chapters");
+        assert!(nodes[0].children.iter().all(|c| c.kind == StructKind::Chapter));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
