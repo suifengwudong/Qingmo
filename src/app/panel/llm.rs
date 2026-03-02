@@ -316,8 +316,8 @@ impl TextToolApp {
                         self.llm_task = Some(LlmTask::spawn(backend, config, prompt));
                         self.status = "LLM 调用已提交，后台处理中…".to_owned();
                     }
-                    if ui.button("插入到左侧编辑区").clicked() {
-                        if !self.llm_output.is_empty() {
+                    if ui.button("插入到左侧编辑区").clicked()
+                        && !self.llm_output.is_empty() {
                             if let Some(lf) = &mut self.left_file {
                                 lf.content.push_str("\n\n");
                                 lf.content.push_str(&self.llm_output);
@@ -327,7 +327,6 @@ impl TextToolApp {
                                 self.status = "请先在小说编辑面板打开 Markdown 文件".to_owned();
                             }
                         }
-                    }
                     if ui.button("🗑 清空").clicked() {
                         self.llm_prompt.clear();
                         self.llm_output.clear();

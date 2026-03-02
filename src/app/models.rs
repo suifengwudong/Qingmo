@@ -322,7 +322,7 @@ pub fn node_at<'a>(roots: &'a [StructNode], path: &[usize]) -> Option<&'a Struct
 }
 
 /// Navigate mutably into a tree of `StructNode`s by index path.
-pub fn node_at_mut<'a>(roots: &'a mut Vec<StructNode>, path: &[usize]) -> Option<&'a mut StructNode> {
+pub fn node_at_mut<'a>(roots: &'a mut [StructNode], path: &[usize]) -> Option<&'a mut StructNode> {
     if path.is_empty() { return None; }
     if path.len() == 1 {
         return roots.get_mut(path[0]);
@@ -463,7 +463,7 @@ pub enum Panel {
     Objects,
     /// 章节结构设计 (总纲 / 卷 / 章 / 节)
     Structure,
-    LLM,
+    Llm,
 }
 
 impl Panel {
@@ -472,7 +472,7 @@ impl Panel {
             Panel::Novel     => "📝",
             Panel::Objects   => "🌐",
             Panel::Structure => "🏗",
-            Panel::LLM       => "🤖",
+            Panel::Llm       => "🤖",
         }
     }
     pub fn label(self) -> &'static str {
@@ -480,7 +480,7 @@ impl Panel {
             Panel::Novel     => "小说编辑",
             Panel::Objects   => "世界对象",
             Panel::Structure => "章节结构",
-            Panel::LLM       => "LLM辅助",
+            Panel::Llm       => "LLM辅助",
         }
     }
 }

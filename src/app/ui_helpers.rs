@@ -53,7 +53,7 @@ impl TextToolApp {
                 });
 
                 ui.menu_button("视图", |ui| {
-                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::LLM] {
+                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::Llm] {
                         let label = format!("{} {}", panel.icon(), panel.label());
                         let selected = self.active_panel == panel;
                         if ui.selectable_label(selected, label).clicked() {
@@ -121,7 +121,7 @@ impl TextToolApp {
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(8.0);
-                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::LLM] {
+                    for panel in [Panel::Novel, Panel::Objects, Panel::Structure, Panel::Llm] {
                         let selected = self.active_panel == panel;
                         let btn = egui::Button::new(
                             RichText::new(panel.icon()).size(22.0)

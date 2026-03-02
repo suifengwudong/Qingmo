@@ -129,8 +129,8 @@ fn strip_heading(line: &str, n: usize) -> Option<&str> {
     let prefix: String = "#".repeat(n);
     if line.starts_with(prefix.as_str()) {
         let after = &line[n..];
-        if after.starts_with(' ') {
-            Some(after[1..].trim_end())
+        if let Some(stripped) = after.strip_prefix(' ') {
+            Some(stripped.trim_end())
         } else if after.is_empty() {
             Some("")
         } else {
