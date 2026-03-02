@@ -4,12 +4,14 @@ use std::path::{Path, PathBuf};
 mod models;
 mod file_manager;
 mod llm_backend;
+mod agent;
 mod panel;
 mod ui_helpers;
 
 pub use models::*;
 pub use file_manager::*;
 pub use llm_backend::{LlmBackend, LlmTask, MockBackend, ApiBackend, LocalServerBackend, PromptTemplate};
+pub use agent::{Skill, SkillSet, AgentBackend};
 
 // ── Application state ─────────────────────────────────────────────────────────
 
