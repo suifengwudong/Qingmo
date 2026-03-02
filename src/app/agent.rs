@@ -534,7 +534,7 @@ impl Skill for AddChapterNodeSkill {
         };
 
         let mut roots = self.struct_roots.clone();
-        let mut node = StructNode {
+        let node = StructNode {
             title:   title.to_owned(),
             kind,
             tag:     ChapterTag::Normal,
@@ -544,10 +544,6 @@ impl Skill for AddChapterNodeSkill {
             linked_objects: vec![],
             node_links: vec![],
         };
-        // Set a meaningful summary default if none provided
-        if node.summary.is_empty() {
-            node.summary = String::new();
-        }
         roots.push(node);
 
         let root = self.project_root.as_ref().ok_or("项目未打开")?;
@@ -1634,8 +1630,8 @@ mod tests {
         let skill = GetTextTemplatesSkill;
         let result = skill.execute(&serde_json::json!({})).unwrap();
         let arr = result.as_array().unwrap();
-        // Should return all 18 templates
-        assert!(arr.len() >= 15);
+        // Should return all 18 templates (6 categories × 3 templates each)
+        assert_eq!(arr.len(), 18);
         // Each entry should have category, name, template
         assert!(arr[0]["category"].is_string());
         assert!(arr[0]["name"].is_string());
