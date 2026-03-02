@@ -17,41 +17,12 @@ impl TextToolApp {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        Self::search_dir(&root, &query, &mut self.search_results);
+        search_dir(&root, &query, &mut self.search_results);
         self.status = format!(
             "搜索「{}」找到 {} 处结果",
             query,
             self.search_results.len()
         );
-    }
-
-    /// Recursively scan `dir` for lines in `.md` / `.json` files that contain
-    /// `query`.  Results are appended to `results`.
-    pub(super) fn search_dir(dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                Self::search_dir(&path, query, results);
-            } else {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ext == "md" || ext == "json" {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        for (line_no, line) in text.lines().enumerate() {
-                            if line.contains(query) {
-                                results.push(SearchResult {
-                                    file_path: path.clone(),
-                                    line_no: line_no + 1,
-                                    line: line.to_owned(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     // ── Export & Backup ───────────────────────────────────────────────────────
@@ -103,25 +74,56 @@ impl TextToolApp {
         };
         let folder_name = root.file_name().unwrap_or_default();
         let dest = dest_parent.join(folder_name);
-        match Self::copy_dir_all(&root, &dest) {
+        match copy_dir_all(&root, &dest) {
             Ok(_) => self.status = format!("已备份到 {}", dest.display()),
             Err(e) => self.status = format!("备份失败: {e}"),
         }
     }
+}
 
-    /// Recursively copy directory `src` to `dst`, creating it if necessary.
-    pub(super) fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let ty = entry.file_type()?;
-            let dst_path = dst.join(entry.file_name());
-            if ty.is_dir() {
-                Self::copy_dir_all(&entry.path(), &dst_path)?;
-            } else {
-                std::fs::copy(entry.path(), dst_path)?;
+// ── File utilities ────────────────────────────────────────────────────────────
+
+/// Recursively scan `dir` for lines in `.md` / `.json` files that contain
+/// `query`.  Results are appended to `results`.
+pub(super) fn search_dir(dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            search_dir(&path, query, results);
+        } else {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext == "md" || ext == "json" {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    for (line_no, line) in text.lines().enumerate() {
+                        if line.contains(query) {
+                            results.push(SearchResult {
+                                file_path: path.clone(),
+                                line_no: line_no + 1,
+                                line: line.to_owned(),
+                            });
+                        }
+                    }
+                }
             }
         }
-        Ok(())
     }
+}
+
+/// Recursively copy directory `src` to `dst`, creating it if necessary.
+pub(super) fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
 }
