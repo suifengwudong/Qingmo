@@ -395,6 +395,8 @@ pub struct LlmConfig {
     pub temperature: f32,
     pub max_tokens: u32,
     pub use_local: bool,
+    /// Optional system prompt sent before the user message (OpenAI / llama.cpp).
+    pub system_prompt: String,
 }
 
 // ── Markdown rendering settings ───────────────────────────────────────────────
