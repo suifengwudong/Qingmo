@@ -8,6 +8,11 @@ Cargo.lock
 # Temporary files
 *.tmp
 *.log
+rustup-init.exe
+
+# Release executables (keep documentation)
+release/*/text_tool.exe
+release/*/*.zip
 
 # Assets (if not committed)
 # assets/
