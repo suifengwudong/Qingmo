@@ -37,43 +37,43 @@ impl TextToolApp {
 
     // ── Save (app state → file) ───────────────────────────────────────────────
 
-    /// Save world objects to `Design/世界对象.json`.
+    /// Save world objects to `data/world.json`.
     pub(super) fn sync_world_objects_to_json(&mut self) {
         match serde_json::to_string_pretty(&self.world_objects) {
             Ok(json) => {
-                if self.write_project_file("Design", "世界对象.json", &json) {
-                    self.status = "世界对象已同步到 Design/世界对象.json".to_owned();
+                if self.write_project_file("data", "world.json", &json) {
+                    self.status = "世界对象已同步到 data/world.json".to_owned();
                 }
             }
             Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
-    /// Save chapter structure to `Design/章节结构.json`.
+    /// Save chapter structure to `data/structure.json`.
     pub(super) fn sync_struct_to_json(&mut self) {
         match serde_json::to_string_pretty(&self.struct_roots) {
             Ok(json) => {
-                if self.write_project_file("Design", "章节结构.json", &json) {
-                    self.status = "章节结构已同步到 Design/章节结构.json".to_owned();
+                if self.write_project_file("data", "structure.json", &json) {
+                    self.status = "章节结构已同步到 data/structure.json".to_owned();
                 }
             }
             Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
-    /// Save milestones to `Design/里程碑.json`.
+    /// Save milestones to `data/milestones.json`.
     pub(super) fn sync_milestones_to_json(&mut self) {
         match serde_json::to_string_pretty(&self.milestones) {
             Ok(json) => {
-                if self.write_project_file("Design", "里程碑.json", &json) {
-                    self.status = "里程碑已同步到 Design/里程碑.json".to_owned();
+                if self.write_project_file("data", "milestones.json", &json) {
+                    self.status = "里程碑已同步到 data/milestones.json".to_owned();
                 }
             }
             Err(e) => self.status = format!("序列化失败: {e}"),
         }
     }
 
-    /// Save foreshadows to `Content/伏笔.md`.
+    /// Save foreshadows to `data/foreshadows.md`.
     pub(super) fn sync_foreshadows_to_md(&mut self) {
         let mut md = String::from("# 伏笔列表\n\n");
         for fs in &self.foreshadows {
@@ -86,16 +86,16 @@ impl TextToolApp {
                 md.push_str(&format!("**关联章节**: {}\n\n", fs.related_chapters.join("、")));
             }
         }
-        if self.write_project_file("Content", "伏笔.md", &md) {
-            self.status = "伏笔已同步到 Content/伏笔.md".to_owned();
+        if self.write_project_file("data", "foreshadows.md", &md) {
+            self.status = "伏笔已同步到 data/foreshadows.md".to_owned();
         }
     }
 
     // ── Load (file → app state) ───────────────────────────────────────────────
 
-    /// Load world objects from `Design/世界对象.json` into `self.world_objects`.
+    /// Load world objects from `data/world.json` into `self.world_objects`.
     pub(super) fn load_world_objects_from_json(&mut self) {
-        match self.read_project_file("Design", "世界对象.json") {
+        match self.read_project_file("data", "world.json") {
             Ok((text, display)) => match serde_json::from_str::<Vec<WorldObject>>(&text) {
                 Ok(objs) => {
                     self.world_objects = objs;
@@ -108,9 +108,9 @@ impl TextToolApp {
         }
     }
 
-    /// Load chapter structure from `Design/章节结构.json` into `self.struct_roots`.
+    /// Load chapter structure from `data/structure.json` into `self.struct_roots`.
     pub(super) fn load_struct_from_json(&mut self) {
-        match self.read_project_file("Design", "章节结构.json") {
+        match self.read_project_file("data", "structure.json") {
             Ok((text, display)) => match serde_json::from_str::<Vec<StructNode>>(&text) {
                 Ok(nodes) => {
                     self.struct_roots = nodes;
@@ -123,9 +123,9 @@ impl TextToolApp {
         }
     }
 
-    /// Load milestones from `Design/里程碑.json` into `self.milestones`.
+    /// Load milestones from `data/milestones.json` into `self.milestones`.
     pub(super) fn load_milestones_from_json(&mut self) {
-        match self.read_project_file("Design", "里程碑.json") {
+        match self.read_project_file("data", "milestones.json") {
             Ok((text, display)) => match serde_json::from_str::<Vec<Milestone>>(&text) {
                 Ok(ms) => {
                     self.milestones = ms;
@@ -138,12 +138,12 @@ impl TextToolApp {
         }
     }
 
-    /// Parse `Content/伏笔.md` → `self.foreshadows`.
+    /// Parse `data/foreshadows.md` → `self.foreshadows`.
     ///
     /// `## name` headings become foreshadow entries; `✅` in the heading marks
     /// them as resolved.
     pub(super) fn load_foreshadows_from_md(&mut self) {
-        match self.read_project_file("Content", "伏笔.md") {
+        match self.read_project_file("data", "foreshadows.md") {
             Ok((text, display)) => {
                 let mut foreshadows = Vec::new();
                 for line in text.lines() {
@@ -203,7 +203,7 @@ impl TextToolApp {
         self.status = format!("已从 Markdown 提取 {count} 个结构节点");
     }
 
-    /// Build a chapter structure from the project's `Content/` folder hierarchy.
+    /// Build a chapter structure from the project's `chapters/` folder hierarchy.
     ///
     /// Convention (Req 2):
     ///   • Each `.md` file = one chapter
@@ -215,7 +215,7 @@ impl TextToolApp {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        let content_dir = root.join("Content");
+        let content_dir = root.join("chapters");
         let nodes = build_struct_from_dir(&content_dir);
         let count = count_nodes(&nodes);
         self.struct_roots = nodes;
@@ -224,15 +224,15 @@ impl TextToolApp {
     }
 
     /// Create a short-novel project template under `self.project_root`:
-    /// flat Content/ structure (single layer — only `.md` chapters, no subdirs).
+    /// flat chapters/ structure (single layer — only `.md` chapters, no subdirs).
     pub(super) fn apply_template_short(&mut self) {
         let Some(root) = self.project_root.clone() else {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        let content = root.join("Content");
+        let content = root.join("chapters");
         if let Err(e) = std::fs::create_dir_all(&content) {
-            self.status = format!("创建 Content 目录失败: {e}");
+            self.status = format!("创建 chapters 目录失败: {e}");
             return;
         }
         let chapters = ["序章.md", "第一章.md", "第二章.md", "第三章.md", "尾声.md"];
@@ -258,15 +258,15 @@ impl TextToolApp {
     }
 
     /// Create a long-novel project template under `self.project_root`:
-    /// two-layer Content/ structure (Volume subdirs → Chapter `.md` files).
+    /// two-layer chapters/ structure (Volume subdirs → Chapter `.md` files).
     pub(super) fn apply_template_long(&mut self) {
         let Some(root) = self.project_root.clone() else {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        let content = root.join("Content");
+        let content = root.join("chapters");
         if let Err(e) = std::fs::create_dir_all(&content) {
-            self.status = format!("创建 Content 目录失败: {e}");
+            self.status = format!("创建 chapters 目录失败: {e}");
             return;
         }
         let volumes: &[(&str, &[&str])] = &[
@@ -298,6 +298,16 @@ impl TextToolApp {
             self.status = format!("模板创建部分失败（已成功创建的文件保留在磁盘）: {}", errors.join("; "));
         } else {
             self.status = "已创建长篇模板（卷→章二层结构）".to_owned();
+        }
+    }
+    pub(super) fn migrate_legacy_layout(&mut self) {
+        let Some(root) = self.project_root.clone() else { return; };
+        if migrate_project_dir(&root) {
+            // Reload llm_history_path to point at new location
+            let new_history = root.join("data").join("llm_history.json");
+            self.llm_history = super::LlmHistory::load(&new_history);
+            self.llm_history_path = Some(new_history);
+            self.status = "已自动迁移项目目录结构（Content→chapters, Design→data）".to_owned();
         }
     }
 }
@@ -398,6 +408,65 @@ pub(super) fn count_nodes(roots: &[StructNode]) -> usize {
     roots.iter().map(|n| 1 + count_nodes(&n.children)).sum()
 }
 
+/// Migrate a legacy project layout (Content/ + Design/) to the new layout
+/// (chapters/ + data/).  Returns `true` if migration was attempted (i.e.
+/// either `Content/` or `Design/` was found), `false` otherwise.
+pub(super) fn migrate_project_dir(root: &std::path::Path) -> bool {
+    let old_content = root.join("Content");
+    let old_design  = root.join("Design");
+
+    if !old_content.exists() && !old_design.exists() {
+        return false;
+    }
+
+    let new_chapters = root.join("chapters");
+    let new_data     = root.join("data");
+    let _ = std::fs::create_dir_all(&new_chapters);
+    let _ = std::fs::create_dir_all(&new_data);
+
+    // Move chapter .md files (all except 伏笔.md)
+    if old_content.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&old_content) {
+            for entry in entries.flatten() {
+                let src = entry.path();
+                if src.extension().and_then(|e| e.to_str()) == Some("md") {
+                    let name = src.file_name().unwrap_or_default();
+                    if name == "伏笔.md" {
+                        continue;
+                    }
+                    let dst = new_chapters.join(name);
+                    if src.exists() && !dst.exists() {
+                        let _ = std::fs::rename(&src, &dst);
+                    }
+                }
+            }
+        }
+    }
+
+    // Move foreshadows
+    let src = old_content.join("伏笔.md");
+    let dst = new_data.join("foreshadows.md");
+    if src.exists() && !dst.exists() { let _ = std::fs::rename(&src, &dst); }
+
+    // Move design files
+    for (name, new_name) in &[
+        ("世界对象.json",  "world.json"),
+        ("章节结构.json",  "structure.json"),
+        ("里程碑.json",    "milestones.json"),
+        ("llm_history.json", "llm_history.json"),
+    ] {
+        let src = old_design.join(name);
+        let dst = new_data.join(new_name);
+        if src.exists() && !dst.exists() { let _ = std::fs::rename(&src, &dst); }
+    }
+
+    // Try to remove now-empty legacy directories
+    let _ = std::fs::remove_dir(&old_content);
+    let _ = std::fs::remove_dir(&old_design);
+
+    true
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -465,11 +534,11 @@ mod tests {
     #[test]
     fn test_short_template_creates_flat_structure() {
         let dir = std::env::temp_dir().join("qingmo_test_short_tpl");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("chapters")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         // Simulate apply_template_short logic (no TextToolApp needed)
-        let content = dir.join("Content");
+        let content = dir.join("chapters");
         let chapters = ["序章.md", "第一章.md", "第二章.md", "第三章.md", "尾声.md"];
         for name in &chapters {
             let path = content.join(name);
@@ -490,9 +559,9 @@ mod tests {
     #[test]
     fn test_long_template_creates_two_layer_structure() {
         let dir = std::env::temp_dir().join("qingmo_test_long_tpl");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::create_dir_all(dir.join("chapters")).unwrap();
 
-        let content = dir.join("Content");
+        let content = dir.join("chapters");
         let volumes: &[(&str, &[&str])] = &[
             ("第一卷", &["序章.md", "第一章.md", "第二章.md"]),
             ("第二卷", &["第一章.md", "第二章.md", "第三章.md"]),
@@ -513,6 +582,35 @@ mod tests {
         assert_eq!(nodes[0].children.len(), 3, "第一卷 should have 3 chapters");
         assert_eq!(nodes[1].children.len(), 3, "第二卷 should have 3 chapters");
         assert!(nodes[0].children.iter().all(|c| c.kind == StructKind::Chapter));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_migrate_legacy_layout() {
+        let dir = std::env::temp_dir().join("qingmo_test_migrate");
+        let _ = std::fs::remove_dir_all(&dir);
+        // Create old layout
+        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::write(dir.join("Content").join("ch1.md"), "# 第一章\n").unwrap();
+        std::fs::write(dir.join("Content").join("伏笔.md"), "# 伏笔列表\n").unwrap();
+        std::fs::write(dir.join("Design").join("世界对象.json"), "[]").unwrap();
+        std::fs::write(dir.join("Design").join("章节结构.json"), "[]").unwrap();
+
+        let migrated = migrate_project_dir(&dir);
+        assert!(migrated, "migration should have occurred");
+
+        // Verify new paths exist
+        assert!(dir.join("chapters").join("ch1.md").exists());
+        assert!(dir.join("data").join("foreshadows.md").exists());
+        assert!(dir.join("data").join("world.json").exists());
+        assert!(dir.join("data").join("structure.json").exists());
+
+        // Old files should be gone
+        assert!(!dir.join("Content").join("ch1.md").exists());
+        assert!(!dir.join("Content").join("伏笔.md").exists());
+        assert!(!dir.join("Design").join("世界对象.json").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
