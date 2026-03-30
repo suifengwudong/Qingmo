@@ -29,10 +29,10 @@ impl TextToolApp {
                     ui.heading("世界对象");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // JSON sync
-                        if ui.small_button("⬆").on_hover_text("保存世界对象到 Design/世界对象.json").clicked() {
+                        if ui.small_button("⬆").on_hover_text("保存世界对象到 data/world.json").clicked() {
                             do_sync = true;
                         }
-                        if ui.small_button("⬇").on_hover_text("从 Design/世界对象.json 加载世界对象").clicked() {
+                        if ui.small_button("⬇").on_hover_text("从 data/world.json 加载世界对象").clicked() {
                             self.load_world_objects_from_json();
                         }
                         // View mode toggle

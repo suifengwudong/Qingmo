@@ -75,7 +75,7 @@ impl TextToolApp {
                         if self.file_tree_mode == FileTreeMode::Files {
                             if let Some(root) = self.project_root.clone() {
                                 if ui.small_button("➕").on_hover_text("新建文件").clicked() {
-                                    new_in = Some(root.join("Content"));
+                    new_in = Some(root.join("chapters"));
                                 }
                             }
                         }
@@ -119,6 +119,28 @@ impl TextToolApp {
                             }
                         }
                     });
+
+                    // ── Full-book word-count stats ────────────────────────────
+                    if let Some(root) = &self.project_root.clone() {
+                        let content_dir = root.join("chapters");
+                        let total = crate::app::search::count_words_in_dir(&content_dir);
+                        ui.separator();
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(format!("📚 全书合计: {total} 字"))
+                            .small().color(Color32::from_gray(160)));
+                        if self.today_added_words > 0 {
+                            ui.label(RichText::new(format!("✍ 今日新增: +{} 字", self.today_added_words))
+                                .small().color(Color32::from_rgb(100, 200, 120)));
+                        }
+                        let goal = self.md_settings.daily_word_goal;
+                        if goal > 0 {
+                            let progress = (self.today_added_words as f32 / goal as f32).min(1.0);
+                            ui.add(egui::ProgressBar::new(progress)
+                                .text(format!("{}/{} 字  ({:.0}%)",
+                                    self.today_added_words, goal, progress * 100.0)));
+                        }
+                        ui.add_space(2.0);
+                    }
                 }
             });
 
@@ -197,7 +219,7 @@ impl TextToolApp {
                     if resp.clicked() || resp.double_clicked() {
                         if let Some(root) = project_root {
                             let needle = node.title.to_lowercase();
-                            if let Some(path) = find_md_for_title(&root.join("Content"), &needle) {
+                            if let Some(path) = find_md_for_title(&root.join("chapters"), &needle) {
                                 *open_left = Some(path);
                             }
                         }
@@ -421,7 +443,7 @@ impl TextToolApp {
                 ui.label(RichText::new("编辑区").strong());
                 ui.separator();
                 if ui.button("同步章节结构")
-                    .on_hover_text("根据 Content/ 文件夹层级自动同步章节结构\n（每个.md = 一章，子目录 = 卷/纲）")
+                    .on_hover_text("根据 chapters/ 文件夹层级自动同步章节结构\n（每个.md = 一章，子目录 = 卷/纲）")
                     .clicked()
                 {
                     do_sync_folders = true;
