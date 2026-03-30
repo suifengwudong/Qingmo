@@ -749,7 +749,7 @@ impl TextToolApp {
         // Collect ranges before borrowing left_file — find_bar and left_file
         // are different fields so NLL allows both to be borrowed, but we collect
         // into a local Vec here to make the ordering unambiguous.
-        let ranges: Vec<(usize, usize)> = bar.match_ranges.iter().rev().copied().collect();
+        let ranges: Vec<(usize, usize)> = bar.match_ranges.iter().rev().map(|m| (m.byte_start, m.byte_end)).collect();
 
         if let Some(f) = &mut self.left_file {
             // Save undo snapshot.
@@ -1408,3 +1408,74 @@ pub(super) static COMMANDS: &[Command] = &[
         action: |app| app.active_panel = crate::app::Panel::Structure,
     },
 ];
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::super::FindBar;
+
+    #[test]
+    fn test_find_bar_refresh_matches_ascii() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.refresh_matches("hello world hello");
+        assert_eq!(bar.match_ranges.len(), 2);
+        assert_eq!(bar.match_ranges[0].byte_start, 0);
+        assert_eq!(bar.match_ranges[0].byte_end, 5);
+        assert_eq!(bar.match_ranges[0].char_start, 0);
+        assert_eq!(bar.match_ranges[0].char_end, 5);
+        assert_eq!(bar.match_ranges[1].byte_start, 12);
+        assert_eq!(bar.match_ranges[1].byte_end, 17);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_case_insensitive() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.case_sensitive = false;
+        bar.refresh_matches("Hello HELLO hello");
+        assert_eq!(bar.match_ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_case_sensitive() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.case_sensitive = true;
+        bar.refresh_matches("Hello HELLO hello");
+        assert_eq!(bar.match_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_chinese() {
+        let mut bar = FindBar::new(false);
+        bar.query = "世界".to_owned();
+        bar.refresh_matches("你好世界，再见世界");
+        assert_eq!(bar.match_ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_find_bar_navigate() {
+        let mut bar = FindBar::new(false);
+        bar.query = "a".to_owned();
+        bar.refresh_matches("a b a c a");
+        assert_eq!(bar.match_ranges.len(), 3);
+        assert_eq!(bar.current_match, 0);
+        bar.go_next();
+        assert_eq!(bar.current_match, 1);
+        bar.go_prev();
+        assert_eq!(bar.current_match, 0);
+        bar.go_prev();
+        assert_eq!(bar.current_match, 2);
+        bar.go_next();
+        assert_eq!(bar.current_match, 0);
+    }
+
+    #[test]
+    fn test_find_bar_empty_query() {
+        let mut bar = FindBar::new(false);
+        bar.refresh_matches("some text");
+        assert!(bar.match_ranges.is_empty());
+    }
+}
