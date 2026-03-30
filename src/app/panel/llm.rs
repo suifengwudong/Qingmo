@@ -1,5 +1,5 @@
 use egui::{RichText, Color32};
-use super::super::{TextToolApp, LlmTask, PromptTemplate, LlmHistoryEntry};
+use super::super::{TextToolApp, LlmTask, PromptTemplate, LlmHistoryEntry, unix_secs_to_iso_date};
 
 impl TextToolApp {
     // ── Panel: LLM Assistance ─────────────────────────────────────────────────
@@ -19,9 +19,9 @@ impl TextToolApp {
                             .unwrap_or_default()
                             .as_secs();
                         let session_key = self.llm_session_key();
-                        let next_id = self.llm_history.entries.len() as u64 + 1;
+                        let entry_id = self.llm_history.alloc_id();
                         let entry = LlmHistoryEntry {
-                            id: next_id,
+                            id: entry_id,
                             timestamp: ts,
                             session_key,
                             prompt: self.llm_prompt.clone(),
@@ -600,24 +600,14 @@ impl TextToolApp {
         }
     }
 
-    /// Build the session key `"<project_path>::<YYYY-MM-DD>"` for grouping
-    /// history entries.
+    /// Build the session key `"<YYYY-MM-DD>"` (ISO 8601, UTC) for grouping
+    /// history entries by day.
     fn llm_session_key(&self) -> String {
-        let project = self.project_root
-            .as_ref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "unknown".to_owned());
-
-        // Derive a date string from the Unix timestamp, UTC-based.
         let secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let days = secs / 86400;
-        let year_approx = 1970 + days / 365;
-        // For a simple display label we just use the raw day-of-year as a
-        // stable grouping key without pulling in a date library.
-        format!("{project}::{year_approx}-day{}", days % 365)
+        unix_secs_to_iso_date(secs)
     }
 }
 

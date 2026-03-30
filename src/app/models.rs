@@ -550,16 +550,33 @@ pub struct LlmHistoryEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmHistory {
     pub entries: Vec<LlmHistoryEntry>,
+    /// Monotonically-increasing counter used to allocate entry IDs.
+    /// Stored so that IDs stay unique even after entries are deleted.
+    #[serde(default)]
+    pub next_id: u64,
 }
 
 impl LlmHistory {
+    /// Allocate the next unique entry ID and advance the internal counter.
+    pub fn alloc_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
     /// Load from disk, returning an empty history if the file is missing or
-    /// corrupted.
+    /// corrupted.  If the loaded file pre-dates the `next_id` field, the
+    /// counter is inferred from the max existing entry id to avoid collisions.
     pub fn load(path: &std::path::Path) -> Self {
-        std::fs::read_to_string(path)
+        let mut h: Self = std::fs::read_to_string(path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // Repair next_id for files written before the counter existed.
+        let max_id = h.entries.iter().map(|e| e.id).max().unwrap_or(0);
+        if h.next_id < max_id {
+            h.next_id = max_id;
+        }
+        h
     }
 
     /// Append `entry`, then flush the entire history to `path`.
@@ -588,6 +605,37 @@ impl LlmHistory {
             let _ = std::fs::rename(path, archive);
         }
     }
+}
+
+// ── Date helpers ──────────────────────────────────────────────────────────────
+
+/// Convert a Unix timestamp (seconds since 1970-01-01 UTC) to an ISO 8601
+/// date string `"YYYY-MM-DD"` using the proleptic Gregorian calendar.
+///
+/// This does not require any external date/time crate.
+pub fn unix_secs_to_iso_date(secs: u64) -> String {
+    let mut days_remaining = (secs / 86400) as u32;
+    let mut year = 1970u32;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if days_remaining < days_in_year { break; }
+        days_remaining -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap_year(year);
+    let month_lengths = [31u32, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 1u32;
+    for &ml in &month_lengths {
+        if days_remaining < ml { break; }
+        days_remaining -= ml;
+        month += 1;
+    }
+    let day = days_remaining + 1;
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn is_leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 // ── Full-text search result ────────────────────────────────────────────────────

@@ -222,20 +222,38 @@ pub(super) struct RenameDialog {
 
 // ── Find / Replace bar ────────────────────────────────────────────────────────
 
+/// A single match within the editor content, with both byte offsets (for
+/// `replace_range`) and pre-computed char indices (for `CCursor`) cached at
+/// match-find time to avoid repeated O(n) `chars().count()` traversals.
+pub(super) struct MatchRange {
+    pub byte_start: usize,
+    pub byte_end:   usize,
+    /// `content[..byte_start].chars().count()` – cached at match time.
+    pub char_start: usize,
+    /// `content[..byte_end].chars().count()` – cached at match time.
+    pub char_end:   usize,
+}
+
 pub(super) struct FindBar {
     pub query: String,
     pub replace: String,
     pub case_sensitive: bool,
     pub replace_mode: bool,
-    /// Cached byte-offset ranges `(start, end)` of all current matches in the
-    /// left editor's content.  Refreshed whenever `query` or `case_sensitive`
-    /// changes.
-    pub match_ranges: Vec<(usize, usize)>,
+    /// Cached match positions.  Refreshed whenever `query`, `case_sensitive`,
+    /// or the editor content changes.
+    pub match_ranges: Vec<MatchRange>,
     /// Index into `match_ranges` that is currently "selected".
     pub current_match: usize,
     /// True once the query box has received its initial focus on bar open.
     /// Prevents focus from being stolen back from the replace field every frame.
     pub focus_requested: bool,
+    /// Cached lowercase version of the last content passed to `refresh_matches`.
+    /// Avoids re-allocating a full lowercase copy on each query keystroke when
+    /// the document content hasn't changed (the common case for large chapters).
+    cached_lower: Option<String>,
+    /// Byte length of the content when `cached_lower` was built.
+    /// Used as a fast validity check: if lengths differ, rebuild the cache.
+    cached_lower_len: usize,
 }
 
 impl FindBar {
@@ -248,40 +266,85 @@ impl FindBar {
             match_ranges: Vec::new(),
             current_match: 0,
             focus_requested: false,
+            cached_lower: None,
+            cached_lower_len: 0,
         }
     }
 
     /// Rebuild `match_ranges` by scanning `text` for `self.query`.
+    ///
+    /// Char offsets are computed incrementally (single O(n) pass) so that
+    /// `select_current_match` can look them up in O(1) instead of O(n).
+    ///
+    /// The lowercase version of `text` is cached inside `FindBar` and reused
+    /// across consecutive keystrokes when the document content is unchanged.
     pub fn refresh_matches(&mut self, text: &str) {
         self.match_ranges.clear();
         self.current_match = 0;
         if self.query.is_empty() {
             return;
         }
-        let (haystack, needle): (std::borrow::Cow<str>, std::borrow::Cow<str>) =
-            if self.case_sensitive {
-                (std::borrow::Cow::Borrowed(text), std::borrow::Cow::Borrowed(&self.query))
-            } else {
-                (std::borrow::Cow::Owned(text.to_lowercase()), std::borrow::Cow::Owned(self.query.to_lowercase()))
-            };
+
+        // Build or reuse the lowercase cache.
+        let need_rebuild = !self.case_sensitive
+            && (self.cached_lower.is_none() || self.cached_lower_len != text.len());
+        if need_rebuild {
+            self.cached_lower = Some(text.to_lowercase());
+            self.cached_lower_len = text.len();
+        }
+
+        let haystack: &str = if self.case_sensitive {
+            text
+        } else {
+            self.cached_lower.as_deref().unwrap_or(text)
+        };
+        let needle: std::borrow::Cow<str> = if self.case_sensitive {
+            std::borrow::Cow::Borrowed(&self.query)
+        } else {
+            std::borrow::Cow::Owned(self.query.to_lowercase())
+        };
         let nlen = needle.len();
         if nlen == 0 {
             return;
         }
-        let mut start = 0usize;
+
+        // Walk through all matches, accumulating char position incrementally.
+        let mut byte_cursor = 0usize;
+        let mut char_cursor = 0usize;
         loop {
-            match haystack[start..].find(needle.as_ref()) {
-                Some(pos) => {
-                    let abs = start + pos;
-                    self.match_ranges.push((abs, abs + nlen));
-                    start = abs + nlen;
-                    if start >= haystack.len() {
+            match haystack[byte_cursor..].find(needle.as_ref()) {
+                Some(rel) => {
+                    let match_byte = byte_cursor + rel;
+                    // Advance char_cursor from byte_cursor → match start.
+                    char_cursor += text[byte_cursor..match_byte].chars().count();
+                    let char_start = char_cursor;
+                    // Advance char_cursor across the match.
+                    char_cursor += text[match_byte..match_byte + nlen].chars().count();
+                    let char_end = char_cursor;
+
+                    self.match_ranges.push(MatchRange {
+                        byte_start: match_byte,
+                        byte_end:   match_byte + nlen,
+                        char_start,
+                        char_end,
+                    });
+
+                    byte_cursor = match_byte + nlen;
+                    if byte_cursor >= haystack.len() {
                         break;
                     }
                 }
                 None => break,
             }
         }
+    }
+
+    /// Invalidate the cached lowercase content.  Call this after the editor
+    /// content changes (e.g., after a replace operation) so the next
+    /// `refresh_matches` rebuilds the cache from the new text.
+    pub fn invalidate_cache(&mut self) {
+        self.cached_lower = None;
+        self.cached_lower_len = 0;
     }
 
     pub fn go_next(&mut self) {
