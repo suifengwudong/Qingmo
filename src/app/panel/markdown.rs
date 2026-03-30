@@ -205,7 +205,9 @@ fn build_inline_job(text: &str, font_size: f32, default_color: Color32) -> egui:
     macro_rules! flush_plain {
         () => {
             if plain_start < i {
-                job.append(&text[plain_start..i], 0.0, plain_fmt.clone());
+                if let Some(slice) = text.get(plain_start..i) {
+                    job.append(slice, 0.0, plain_fmt.clone());
+                }
             }
         };
     }
@@ -227,7 +229,7 @@ fn build_inline_job(text: &str, font_size: f32, default_color: Color32) -> egui:
                 i += 1;
             }
             if found_close {
-                let bold_text = &text[start..i];
+                let bold_text = text.get(start..i).unwrap_or("");
                 i += 2; // skip closing **
                 if !bold_text.is_empty() {
                     job.append(bold_text, 0.0, egui::TextFormat {
@@ -252,7 +254,7 @@ fn build_inline_job(text: &str, font_size: f32, default_color: Color32) -> egui:
             while i < len && bytes[i] != b'`' {
                 i += 1;
             }
-            let code_text = &text[start..i];
+            let code_text = text.get(start..i).unwrap_or("");
             if i < len { i += 1; } // skip closing `
             if !code_text.is_empty() {
                 job.append(code_text, 0.0, egui::TextFormat {
@@ -272,7 +274,7 @@ fn build_inline_job(text: &str, font_size: f32, default_color: Color32) -> egui:
             while i < len && bytes[i] != b'*' {
                 i += 1;
             }
-            let italic_text = &text[start..i];
+            let italic_text = text.get(start..i).unwrap_or("");
             if i < len { i += 1; } // skip closing *
             if !italic_text.is_empty() {
                 job.append(italic_text, 0.0, egui::TextFormat {
@@ -291,7 +293,9 @@ fn build_inline_job(text: &str, font_size: f32, default_color: Color32) -> egui:
 
     // Flush remaining plain text
     if plain_start < text.len() {
-        job.append(&text[plain_start..], 0.0, plain_fmt);
+        if let Some(slice) = text.get(plain_start..) {
+            job.append(slice, 0.0, plain_fmt);
+        }
     }
 
     job
