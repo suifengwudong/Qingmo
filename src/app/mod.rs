@@ -208,6 +208,9 @@ pub(super) struct FindBar {
     pub match_ranges: Vec<(usize, usize)>,
     /// Index into `match_ranges` that is currently "selected".
     pub current_match: usize,
+    /// True once the query box has received its initial focus on bar open.
+    /// Prevents focus from being stolen back from the replace field every frame.
+    pub focus_requested: bool,
 }
 
 impl FindBar {
@@ -219,6 +222,7 @@ impl FindBar {
             replace_mode,
             match_ranges: Vec::new(),
             current_match: 0,
+            focus_requested: false,
         }
     }
 
