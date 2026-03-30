@@ -694,18 +694,14 @@ impl TextToolApp {
     /// Move the TextEdit cursor/selection to the current find-bar match.
     pub(super) fn select_current_match(&self, ctx: &Context) {
         let Some(bar) = &self.find_bar else { return };
-        let Some(&(start_byte, end_byte)) = bar.match_ranges.get(bar.current_match) else { return };
-        let Some(content) = self.left_file.as_ref().map(|f| &f.content) else { return };
+        let Some(m) = bar.match_ranges.get(bar.current_match) else { return };
 
-        // Convert byte offsets to char indices (required by egui's CCursor).
-        let start_char = content[..start_byte].chars().count();
-        let end_char   = content[..end_byte].chars().count();
-
+        // Char offsets are pre-computed in MatchRange — O(1) lookup.
         let te_id = egui::Id::new("left_editor_main");
         if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, te_id) {
             let range = egui::text::CCursorRange::two(
-                egui::text::CCursor::new(start_char),
-                egui::text::CCursor::new(end_char),
+                egui::text::CCursor::new(m.char_start),
+                egui::text::CCursor::new(m.char_end),
             );
             state.cursor.set_char_range(Some(range));
             egui::text_edit::TextEditState::store(state, ctx, te_id);
@@ -715,7 +711,9 @@ impl TextToolApp {
     /// Replace the match at `current_match` with `bar.replace` and advance.
     pub(super) fn replace_current_match(&mut self, ctx: &Context) {
         let Some(bar) = &self.find_bar else { return };
-        let Some(&(start_byte, end_byte)) = bar.match_ranges.get(bar.current_match) else { return };
+        let Some(m) = bar.match_ranges.get(bar.current_match) else { return };
+        let start_byte = m.byte_start;
+        let end_byte   = m.byte_end;
         let replace_with = bar.replace.clone();
 
         if let Some(f) = &mut self.left_file {
@@ -734,6 +732,7 @@ impl TextToolApp {
             .map(|f| f.content.clone())
             .unwrap_or_default();
         if let Some(bar) = &mut self.find_bar {
+            bar.invalidate_cache();
             bar.refresh_matches(&content);
         }
         self.select_current_match(ctx);
