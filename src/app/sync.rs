@@ -2,6 +2,21 @@ use std::path::Path;
 
 use super::{TextToolApp, WorldObject, StructNode, Foreshadow, Milestone, StructKind};
 
+// ── Atomic file write ─────────────────────────────────────────────────────────
+
+/// Write `content` to `path` atomically: first write to a `.swp` sibling file,
+/// then rename it over `path`.  Within a single filesystem this rename is
+/// atomic on most POSIX systems, preventing a half-written file on crash.
+///
+/// The `.swp` file is cleaned up on success; on failure the original `path` is
+/// left untouched.
+pub(super) fn write_atomically(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension("swp");
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 // ── Data persistence helpers ──────────────────────────────────────────────────
 
 impl TextToolApp {
@@ -11,7 +26,7 @@ impl TextToolApp {
     pub(super) fn write_project_file(&mut self, subdir: &str, filename: &str, content: &str) -> bool {
         if let Some(root) = self.project_root.as_ref() {
             let path = root.join(subdir).join(filename);
-            if let Err(e) = std::fs::write(&path, content) {
+            if let Err(e) = write_atomically(&path, content) {
                 self.status = format!("写入 {} 失败: {e}", path.display());
                 return false;
             }
@@ -472,6 +487,43 @@ pub(super) fn migrate_project_dir(root: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── write_atomically tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_atomically_creates_file() {
+        let dir = std::env::temp_dir().join("qingmo_test_wa_create");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("output.md");
+        write_atomically(&path, "hello world").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+        // No leftover .swp file
+        assert!(!path.with_extension("swp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_atomically_overwrites_existing() {
+        let dir = std::env::temp_dir().join("qingmo_test_wa_overwrite");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("file.txt");
+        std::fs::write(&path, "old content").unwrap();
+        write_atomically(&path, "new content").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content");
+        assert!(!path.with_extension("swp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_write_atomically_swp_cleaned_on_success() {
+        let dir = std::env::temp_dir().join("qingmo_test_wa_swp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("doc.md");
+        write_atomically(&path, "content").unwrap();
+        // Verify .swp does NOT linger after successful write
+        assert!(!dir.join("doc.swp").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn test_extract_struct_nodes_h1_h2_h3() {

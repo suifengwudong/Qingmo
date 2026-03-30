@@ -605,6 +605,88 @@ impl LlmHistory {
             let _ = std::fs::rename(path, archive);
         }
     }
+
+    /// Move entries older than `cold_days` days out of the hot file and into
+    /// per-year cold archive files (`llm_history_archive_<YYYY>.json`).
+    /// The hot file is also trimmed to at most `max_hot` entries (keeping the
+    /// most recent ones).
+    ///
+    /// `path` is the path to the hot `llm_history.json` file; archive files
+    /// are written to the same directory.
+    ///
+    /// Returns the number of entries that were archived.
+    pub fn archive_old_entries(path: &std::path::Path, max_hot: usize, cold_days: u64) -> usize {
+        let mut hot = Self::load(path);
+        if hot.entries.is_empty() { return 0; }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cutoff = now.saturating_sub(cold_days * 86400);
+
+        // Partition: cold = older than cutoff OR beyond the max_hot tail.
+        // Sort by timestamp ascending so we can slice the tail.
+        hot.entries.sort_by_key(|e| e.timestamp);
+
+        // Entries to keep in hot: the most recent max_hot entries that are also
+        // newer than cutoff.
+        let keep_start = hot.entries.len().saturating_sub(max_hot);
+        let cold: Vec<LlmHistoryEntry> = hot.entries[..keep_start]
+            .iter()
+            .chain(hot.entries[keep_start..].iter().filter(|e| e.timestamp < cutoff))
+            .cloned()
+            .collect();
+
+        if cold.is_empty() { return 0; }
+
+        // Write cold entries into per-year archive files.
+        let parent = match path.parent() {
+            Some(p) => p,
+            None    => return 0,
+        };
+        // Group by year.
+        let mut by_year: std::collections::BTreeMap<u32, Vec<LlmHistoryEntry>> =
+            std::collections::BTreeMap::new();
+        for entry in &cold {
+            let year = unix_secs_to_year(entry.timestamp);
+            by_year.entry(year).or_default().push(entry.clone());
+        }
+        for (year, mut new_cold) in by_year {
+            let archive_path = parent.join(format!("llm_history_archive_{year}.json"));
+            // Load existing archive for that year (if any) and append.
+            let mut existing: Vec<LlmHistoryEntry> = std::fs::read_to_string(&archive_path)
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            existing.append(&mut new_cold);
+            if let Ok(json) = serde_json::to_string_pretty(&existing) {
+                let _ = std::fs::write(&archive_path, json);
+            }
+        }
+
+        // Update the hot file: keep only entries not in cold.
+        let cold_ids: std::collections::HashSet<u64> = cold.iter().map(|e| e.id).collect();
+        hot.entries.retain(|e| !cold_ids.contains(&e.id));
+        if let Ok(json) = serde_json::to_string_pretty(&hot) {
+            let _ = std::fs::write(path, json);
+        }
+
+        cold.len()
+    }
+}
+
+/// Return the calendar year (e.g. 2025) for a Unix timestamp.
+fn unix_secs_to_year(secs: u64) -> u32 {
+    let mut days = (secs / 86400) as u32;
+    let mut year = 1970u32;
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if days < days_in_year { break; }
+        days -= days_in_year;
+        year += 1;
+    }
+    year
 }
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
@@ -1083,6 +1165,90 @@ mod tests {
         std::fs::write(&path, &old_json).unwrap();
         let loaded = LlmHistory::load(&path);
         assert!(loaded.next_id >= 5, "next_id should be repaired to at least 5, got {}", loaded.next_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── archive_old_entries tests ─────────────────────────────────────────────
+
+    fn make_entry(id: u64, timestamp: u64) -> LlmHistoryEntry {
+        LlmHistoryEntry { id, timestamp, session_key: "test".into(), prompt: "p".into(), response: "r".into(), model: "m".into() }
+    }
+
+    #[test]
+    fn test_archive_old_entries_moves_excess_to_archive() {
+        let dir = std::env::temp_dir().join("qingmo_test_archive_excess");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm_history.json");
+
+        // Create 510 entries, all recent (timestamp = now)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let mut h = LlmHistory::default();
+        for i in 1u64..=510 {
+            h.entries.push(make_entry(i, now - (510 - i)));
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&h).unwrap()).unwrap();
+
+        let archived = LlmHistory::archive_old_entries(&path, 200, 90);
+        // 510 - 200 = 310 entries should be archived
+        assert_eq!(archived, 310, "should archive 310 entries");
+        let hot = LlmHistory::load(&path);
+        assert!(hot.entries.len() <= 200, "hot file should have ≤ 200 entries");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_archive_old_entries_cold_by_age() {
+        let dir = std::env::temp_dir().join("qingmo_test_archive_age");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm_history.json");
+
+        // 5 old entries (100 days ago) + 5 recent entries, max_hot = 200
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let old_ts = now - 100 * 86400;
+        let mut h = LlmHistory::default();
+        for i in 1u64..=5 { h.entries.push(make_entry(i, old_ts + i)); }
+        for i in 6u64..=10 { h.entries.push(make_entry(i, now - 10 + i)); }
+        std::fs::write(&path, serde_json::to_string_pretty(&h).unwrap()).unwrap();
+
+        let archived = LlmHistory::archive_old_entries(&path, 200, 90);
+        assert_eq!(archived, 5, "5 old entries should be archived");
+        let hot = LlmHistory::load(&path);
+        assert_eq!(hot.entries.len(), 5, "5 recent entries remain in hot");
+
+        // Archive file should exist for the year of old_ts
+        let year = super::unix_secs_to_year(old_ts);
+        let archive_path = dir.join(format!("llm_history_archive_{year}.json"));
+        assert!(archive_path.exists(), "archive file should exist");
+        let cold_data: Vec<LlmHistoryEntry> =
+            serde_json::from_str(&std::fs::read_to_string(&archive_path).unwrap()).unwrap();
+        assert_eq!(cold_data.len(), 5);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_archive_old_entries_noop_when_small() {
+        let dir = std::env::temp_dir().join("qingmo_test_archive_noop");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm_history.json");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let mut h = LlmHistory::default();
+        for i in 1u64..=10 { h.entries.push(make_entry(i, now - i * 60)); }
+        std::fs::write(&path, serde_json::to_string_pretty(&h).unwrap()).unwrap();
+
+        let archived = LlmHistory::archive_old_entries(&path, 200, 90);
+        assert_eq!(archived, 0, "nothing should be archived");
+        let hot = LlmHistory::load(&path);
+        assert_eq!(hot.entries.len(), 10);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

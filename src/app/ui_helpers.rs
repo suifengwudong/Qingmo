@@ -1221,8 +1221,8 @@ impl TextToolApp {
         let filtered: Vec<usize> = COMMANDS.iter().enumerate()
             .filter(|(_, cmd)| {
                 query_lower.is_empty()
-                    || cmd.name.contains(&self.command_palette_query)
-                    || cmd.keywords.iter().any(|k| k.contains(&query_lower))
+                    || fuzzy_match(&query_lower, &cmd.name.to_lowercase())
+                    || cmd.keywords.iter().any(|k| fuzzy_match(&query_lower, k))
             })
             .map(|(i, _)| i)
             .collect();
@@ -1295,6 +1295,24 @@ impl TextToolApp {
             (COMMANDS[idx].action)(self);
         }
     }
+}
+
+// ── Fuzzy matching ────────────────────────────────────────────────────────────
+
+/// Returns `true` if every character in `query` appears in `target` in order
+/// (but not necessarily consecutively).  Both arguments are expected to be
+/// already lower-cased by the caller.
+///
+/// An empty query always matches.
+pub(super) fn fuzzy_match(query: &str, target: &str) -> bool {
+    if query.is_empty() { return true; }
+    let mut target_chars = target.chars();
+    for qc in query.chars() {
+        if !target_chars.any(|tc| tc == qc) {
+            return false;
+        }
+    }
+    true
 }
 
 // ── Command registry ──────────────────────────────────────────────────────────
@@ -1414,6 +1432,47 @@ pub(super) static COMMANDS: &[Command] = &[
 #[cfg(test)]
 mod tests {
     use super::super::FindBar;
+    use super::fuzzy_match;
+
+    // ── fuzzy_match tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fuzzy_match_empty_query_always_matches() {
+        assert!(fuzzy_match("", "any target string"));
+        assert!(fuzzy_match("", ""));
+    }
+
+    #[test]
+    fn test_fuzzy_match_exact_and_substring() {
+        assert!(fuzzy_match("save", "save"));
+        assert!(fuzzy_match("save", "保存文件 save file"));
+        assert!(fuzzy_match("sv", "save"));          // non-consecutive but in order
+        assert!(!fuzzy_match("es", "save"));         // 'e' before 's' – wrong order
+    }
+
+    #[test]
+    fn test_fuzzy_match_out_of_order_fails() {
+        assert!(!fuzzy_match("ba", "ab"));           // b comes after a in target
+        assert!(fuzzy_match("ab", "ab"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_chinese_chars() {
+        assert!(fuzzy_match("主题", "切换主题（亮色/暗色）"));
+        // '主' and '色' both appear in order in the target, so this matches
+        assert!(fuzzy_match("主色", "切换主题（亮色/暗色）"));
+        // '暗主' — '暗' comes after '主' so order is wrong → no match
+        assert!(!fuzzy_match("暗主", "切换主题（亮色/暗色）"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_partial_keyword() {
+        assert!(fuzzy_match("exp", "export"));
+        // e-x-p-o-r-t: x at 1, p at 2, o at 3 — all in order
+        assert!(fuzzy_match("xpo", "export"));
+        // 'z' is not in "export" → no match
+        assert!(!fuzzy_match("xpz", "export"));
+    }
 
     #[test]
     fn test_find_bar_refresh_matches_ascii() {
