@@ -528,6 +528,68 @@ pub struct AppConfig {
     pub theme: AppTheme,
 }
 
+// ── LLM history ───────────────────────────────────────────────────────────────
+
+/// A single persisted LLM interaction (prompt + response).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmHistoryEntry {
+    /// Monotonically-increasing entry ID (1-based).
+    pub id: u64,
+    /// Unix timestamp in seconds when the response was received.
+    pub timestamp: u64,
+    /// Grouping key: `"<project_path>::<YYYY-MM-DD>"`.
+    pub session_key: String,
+    pub prompt: String,
+    pub response: String,
+    /// Model name / path used for this request.
+    pub model: String,
+}
+
+/// All persisted LLM history for a project, loaded from / saved to
+/// `<project>/Design/llm_history.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmHistory {
+    pub entries: Vec<LlmHistoryEntry>,
+}
+
+impl LlmHistory {
+    /// Load from disk, returning an empty history if the file is missing or
+    /// corrupted.
+    pub fn load(path: &std::path::Path) -> Self {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Append `entry`, then flush the entire history to `path`.
+    ///
+    /// Before writing, calls [`maybe_archive`](Self::maybe_archive) to rotate
+    /// the file if it exceeds 2 MB.
+    pub fn append(&mut self, entry: LlmHistoryEntry, path: &std::path::Path) -> std::io::Result<()> {
+        Self::maybe_archive(path);
+        self.entries.push(entry);
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(path, json)
+    }
+
+    /// If `path` exceeds 2 MB, rename it to `llm_history_<timestamp>.json`
+    /// so a fresh file is started.
+    pub fn maybe_archive(path: &std::path::Path) {
+        let Ok(meta) = std::fs::metadata(path) else { return };
+        if meta.len() <= 2 * 1024 * 1024 { return; }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if let Some(parent) = path.parent() {
+            let archive = parent.join(format!("llm_history_{ts}.json"));
+            let _ = std::fs::rename(path, archive);
+        }
+    }
+}
+
 // ── Full-text search result ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]

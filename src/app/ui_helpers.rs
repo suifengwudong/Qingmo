@@ -318,7 +318,8 @@ impl TextToolApp {
                 ctrl && !shift && i.key_pressed(Key::P),           // Ctrl+P preview toggle
                 ctrl && !shift && i.key_pressed(Key::F),           // Ctrl+F find
                 ctrl && !shift && i.key_pressed(Key::H),           // Ctrl+H find+replace
-                i.key_pressed(Key::Escape),                        // Esc (close find bar)
+                i.key_pressed(Key::Escape),                        // Esc (close find bar / palette)
+                ctrl && shift && i.key_pressed(Key::P),            // Ctrl+Shift+P command palette
             )
         });
         if input.0 {
@@ -436,9 +437,23 @@ impl TextToolApp {
                 None => self.find_bar = Some(crate::app::FindBar::new(true)),
             }
         }
-        // Esc: close find bar if open
-        if input.15 && self.find_bar.is_some() {
-            self.find_bar = None;
+        // Esc: close find bar or command palette if open
+        if input.15 {
+            if self.find_bar.is_some() {
+                self.find_bar = None;
+            } else if self.show_command_palette {
+                self.show_command_palette = false;
+                self.command_palette_query.clear();
+                self.command_palette_selection = 0;
+            }
+        }
+        // Ctrl+Shift+P: toggle command palette
+        if input.16 {
+            self.show_command_palette = !self.show_command_palette;
+            if self.show_command_palette {
+                self.command_palette_query.clear();
+                self.command_palette_selection = 0;
+            }
         }
     }
 
@@ -1176,4 +1191,221 @@ impl TextToolApp {
 
         if close { self.show_template_dialog = false; }
     }
+
+    // ── Command palette (Ctrl+Shift+P) ────────────────────────────────────────
+
+    /// Draw the floating command-palette window.
+    ///
+    /// The palette is a modal overlay with a live-filter input box.  Each
+    /// entry in `COMMANDS` is shown when its name or keywords contain the
+    /// current query.  Arrow keys navigate the selection; Enter executes the
+    /// highlighted command; Escape closes the palette.
+    pub(super) fn draw_command_palette(&mut self, ctx: &Context) {
+        if !self.show_command_palette { return; }
+
+        // Keyboard navigation: read keys before showing the window so the
+        // text field does not consume the arrow / enter / esc events first.
+        let (arrow_down, arrow_up, enter_pressed, esc_pressed) =
+            ctx.input(|i| (
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            ));
+
+        if esc_pressed {
+            self.show_command_palette = false;
+            return;
+        }
+
+        let query_lower = self.command_palette_query.to_lowercase();
+        let filtered: Vec<usize> = COMMANDS.iter().enumerate()
+            .filter(|(_, cmd)| {
+                query_lower.is_empty()
+                    || cmd.name.contains(&self.command_palette_query)
+                    || cmd.keywords.iter().any(|k| k.contains(&query_lower))
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if arrow_down {
+            self.command_palette_selection =
+                (self.command_palette_selection + 1).min(filtered.len().saturating_sub(1));
+        }
+        if arrow_up && self.command_palette_selection > 0 {
+            self.command_palette_selection -= 1;
+        }
+        // Clamp selection to the filtered range whenever the query changes.
+        if self.command_palette_selection >= filtered.len().max(1) {
+            self.command_palette_selection = filtered.len().saturating_sub(1);
+        }
+
+        let mut execute_idx: Option<usize> = None;
+        let mut close = false;
+
+        egui::Window::new("命令面板")
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
+            .resizable(false)
+            .collapsible(false)
+            .title_bar(false)
+            .min_width(460.0)
+            .show(ctx, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.command_palette_query)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("输入命令名称或关键词…"),
+                );
+                // Auto-focus on first frame
+                resp.request_focus();
+
+                ui.separator();
+
+                if filtered.is_empty() {
+                    ui.label(RichText::new("无匹配命令").color(Color32::from_gray(130)));
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("cmd_palette_scroll")
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for (rank, &cmd_idx) in filtered.iter().enumerate() {
+                                let selected = rank == self.command_palette_selection;
+                                let label = COMMANDS[cmd_idx].name;
+                                let resp = ui.selectable_label(selected,
+                                    RichText::new(label));
+                                if resp.clicked() {
+                                    execute_idx = Some(cmd_idx);
+                                    close = true;
+                                }
+                            }
+                        });
+
+                    // Enter key: execute the currently selected command
+                    if enter_pressed && !filtered.is_empty() {
+                        execute_idx = Some(filtered[self.command_palette_selection]);
+                        close = true;
+                    }
+                }
+            });
+
+        if close {
+            self.show_command_palette = false;
+            self.command_palette_query.clear();
+            self.command_palette_selection = 0;
+        }
+        if let Some(idx) = execute_idx {
+            (COMMANDS[idx].action)(self);
+        }
+    }
 }
+
+// ── Command registry ──────────────────────────────────────────────────────────
+
+/// A single entry in the command palette.
+pub(super) struct Command {
+    pub name: &'static str,
+    pub keywords: &'static [&'static str],
+    pub action: fn(&mut TextToolApp),
+}
+
+/// All commands available in the command palette (Ctrl+Shift+P).
+pub(super) static COMMANDS: &[Command] = &[
+    Command {
+        name: "打开项目文件夹",
+        keywords: &["open", "folder", "dkxm", "project"],
+        action: |app| {
+            if let Some(path) = rfd_pick_folder() {
+                app.open_project(path);
+            }
+        },
+    },
+    Command {
+        name: "新建文件",
+        keywords: &["new", "file", "xjwj", "create"],
+        action: |app| {
+            if let Some(root) = app.project_root.clone() {
+                app.new_file(root.join("Content"));
+            } else {
+                app.status = "请先打开一个项目".to_owned();
+            }
+        },
+    },
+    Command {
+        name: "保存当前文件",
+        keywords: &["save", "bcwj", "ctrl+s"],
+        action: |app| app.save_left(),
+    },
+    Command {
+        name: "切换主题（亮色/暗色）",
+        keywords: &["theme", "dark", "light", "qt", "qhzt"],
+        action: |app| {
+            app.theme = match app.theme {
+                crate::app::AppTheme::Dark  => crate::app::AppTheme::Light,
+                crate::app::AppTheme::Light => crate::app::AppTheme::Dark,
+            };
+            app.save_config();
+        },
+    },
+    Command {
+        name: "切换预览模式",
+        keywords: &["preview", "ctrl+p", "qhyl"],
+        action: |app| {
+            let is_md = app.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+            if is_md { app.left_preview_mode = !app.left_preview_mode; }
+        },
+    },
+    Command {
+        name: "导出章节合集",
+        keywords: &["export", "merge", "dczj"],
+        action: |app| app.export_chapters_merged(),
+    },
+    Command {
+        name: "导出为纯文本",
+        keywords: &["export", "txt", "plain", "dcwb"],
+        action: |app| app.export_plain_text(),
+    },
+    Command {
+        name: "全文搜索",
+        keywords: &["search", "find", "ctrl+shift+f", "qwss"],
+        action: |app| app.show_search = true,
+    },
+    Command {
+        name: "备份项目",
+        keywords: &["backup", "bfxm"],
+        action: |app| app.backup_project(),
+    },
+    Command {
+        name: "打开设置",
+        keywords: &["settings", "preferences", "dksz"],
+        action: |app| app.show_settings_window = true,
+    },
+    Command {
+        name: "应用短篇模板",
+        keywords: &["template", "short", "yydp"],
+        action: |app| app.apply_template_short(),
+    },
+    Command {
+        name: "应用长篇模板",
+        keywords: &["template", "long", "yycp"],
+        action: |app| app.apply_template_long(),
+    },
+    Command {
+        name: "切换到 LLM 面板",
+        keywords: &["llm", "ai", "qhllm"],
+        action: |app| app.active_panel = crate::app::Panel::Llm,
+    },
+    Command {
+        name: "切换到小说编辑",
+        keywords: &["novel", "editor", "qhxs"],
+        action: |app| app.active_panel = crate::app::Panel::Novel,
+    },
+    Command {
+        name: "切换到世界对象",
+        keywords: &["world", "objects", "characters", "qhsj"],
+        action: |app| app.active_panel = crate::app::Panel::Objects,
+    },
+    Command {
+        name: "切换到章节结构",
+        keywords: &["structure", "chapters", "outline", "qhzj"],
+        action: |app| app.active_panel = crate::app::Panel::Structure,
+    },
+];
