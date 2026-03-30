@@ -421,12 +421,18 @@ impl TextToolApp {
             if self.find_bar.is_none() {
                 self.find_bar = Some(crate::app::FindBar::new(false));
             }
-            // Re-trigger focus so the find box gets focus on next frame
+            // Re-request focus on re-open (e.g. second Ctrl+F while bar already open)
+            if let Some(bar) = &mut self.find_bar {
+                bar.focus_requested = false;
+            }
         }
         // Ctrl+H: open find bar in replace mode
         if input.14 {
             match &mut self.find_bar {
-                Some(bar) => bar.replace_mode = true,
+                Some(bar) => {
+                    bar.replace_mode = true;
+                    bar.focus_requested = false;
+                }
                 None => self.find_bar = Some(crate::app::FindBar::new(true)),
             }
         }
@@ -539,7 +545,11 @@ impl TextToolApp {
                                 .desired_width(200.0)
                                 .hint_text("查找…"),
                         );
-                        resp.request_focus();
+                        // Request focus only on the first frame after the bar is opened.
+                        if !bar.focus_requested {
+                            resp.request_focus();
+                            bar.focus_requested = true;
+                        }
                         if resp.changed() {
                             need_refresh = true;
                         }
@@ -696,14 +706,11 @@ impl TextToolApp {
         if let Some(f) = &mut self.left_file {
             // Save undo snapshot before mutating.
             let prev = f.content.clone();
+            f.content.replace_range(start_byte..end_byte, &replace_with);
+            f.modified = true;
             self.left_undo_stack.push_back(prev);
             if self.left_undo_stack.len() > 200 {
                 self.left_undo_stack.pop_front();
-            }
-
-            if let Some(f) = &mut self.left_file {
-                f.content.replace_range(start_byte..end_byte, &replace_with);
-                f.modified = true;
             }
         }
 
@@ -725,18 +732,19 @@ impl TextToolApp {
         }
         let replace_with = bar.replace.clone();
         let count = bar.match_ranges.len();
+        // Collect ranges before borrowing left_file — find_bar and left_file
+        // are different fields so NLL allows both to be borrowed, but we collect
+        // into a local Vec here to make the ordering unambiguous.
+        let ranges: Vec<(usize, usize)> = bar.match_ranges.iter().rev().copied().collect();
 
         if let Some(f) = &mut self.left_file {
             // Save undo snapshot.
             let prev = f.content.clone();
-            self.left_undo_stack.push_back(prev.clone());
+            self.left_undo_stack.push_back(prev);
             if self.left_undo_stack.len() > 200 {
                 self.left_undo_stack.pop_front();
             }
             // Replace in reverse order to keep earlier byte offsets valid.
-            let ranges: Vec<(usize, usize)> = self.find_bar.as_ref()
-                .map(|b| b.match_ranges.iter().rev().copied().collect())
-                .unwrap_or_default();
             for (s, e) in ranges {
                 f.content.replace_range(s..e, &replace_with);
             }
