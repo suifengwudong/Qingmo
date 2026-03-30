@@ -137,9 +137,15 @@ issues/           — 待办 issue 列表（Markdown 文件）
 6. 提交 PR
 ```
 
-**已完成 Issues**：issue1–issue9, issue10（字数统计）, issue14（纯文本导出修复）
+**已完成 Issues**：issue1–issue20
 
-**当前待处理 Issues**：issue11（命令面板）, issue12（LLM 历史持久化）, issue13（查找栏性能）
+完成摘要：
+- issue17：命令面板（`Ctrl+Shift+P`，模糊匹配，键盘导航，5 个单元测试）
+- issue18：全书字数统计（总字数 + 今日新增 + 日目标进度条 + 各章字数折叠面板，4 个单元测试）
+- issue19：崩溃恢复（`write_atomically` 原子写入 + 项目打开时扫描 `.swp` 文件并弹出恢复对话框）
+- issue20：LLM 历史归档（`archive_old_entries` 按年归档 + 设置窗口显示历史条数/归档文件数/手动归档按钮）
+
+**当前待处理 Issues**：issue21（场景时间线）, issue22（正则全文搜索）, issue23（写作会话统计）
 
 ---
 

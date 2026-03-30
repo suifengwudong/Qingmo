@@ -139,6 +139,44 @@ impl TextToolApp {
                                 .text(format!("{}/{} 字  ({:.0}%)",
                                     self.today_added_words, goal, progress * 100.0)));
                         }
+
+                        // Per-chapter breakdown (collapsible)
+                        let chapters = crate::app::search::count_words_per_chapter(&content_dir);
+                        if !chapters.is_empty() {
+                            egui::CollapsingHeader::new(
+                                RichText::new("各章字数").small().color(Color32::from_gray(140)),
+                            )
+                            .id_salt("chapter_word_stats")
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                for (name, wc) in &chapters {
+                                    let ratio = if total > 0 { *wc as f32 / total as f32 } else { 0.0 };
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("{name}"))
+                                                .small()
+                                                .color(Color32::from_gray(180)),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(format!("{wc} 字"))
+                                                        .small()
+                                                        .color(Color32::from_gray(160)),
+                                                );
+                                            },
+                                        );
+                                    });
+                                    ui.add(
+                                        egui::ProgressBar::new(ratio)
+                                            .desired_width(ui.available_width())
+                                            .desired_height(4.0),
+                                    );
+                                }
+                            });
+                        }
+
                         ui.add_space(2.0);
                     }
                 }

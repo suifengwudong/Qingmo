@@ -975,6 +975,61 @@ impl TextToolApp {
                 ui.separator();
                 ui.add_space(4.0);
 
+                // ── LLM 历史统计 ──────────────────────────────────────────────
+                ui.heading("LLM 历史");
+                ui.add_space(2.0);
+                let hot_count = self.llm_history.entries.len();
+                ui.label(
+                    RichText::new(format!("📜 当前历史条数: {hot_count} 条"))
+                        .small()
+                        .color(Color32::from_gray(160)),
+                );
+                // Count archive files for the current project
+                let archive_count = self
+                    .llm_history_path
+                    .as_ref()
+                    .and_then(|p| p.parent())
+                    .map(|dir| {
+                        std::fs::read_dir(dir)
+                            .ok()
+                            .map(|entries| {
+                                entries
+                                    .flatten()
+                                    .filter(|e| {
+                                        e.file_name()
+                                            .to_str()
+                                            .map(|n| {
+                                                n.starts_with("llm_history_archive_")
+                                                    && n.ends_with(".json")
+                                            })
+                                            .unwrap_or(false)
+                                    })
+                                    .count()
+                            })
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
+                ui.label(
+                    RichText::new(format!("🗄 归档文件数: {archive_count} 个"))
+                        .small()
+                        .color(Color32::from_gray(160)),
+                );
+                if ui
+                    .small_button("立即归档旧记录（90天前 → 归档）")
+                    .on_hover_text("将90天前的历史条目移入冷归档文件，保持主文件轻量")
+                    .clicked()
+                {
+                    if let Some(path) = &self.llm_history_path.clone() {
+                        crate::app::models::LlmHistory::archive_old_entries(path, 200, 90);
+                        self.llm_history = crate::app::models::LlmHistory::load(path);
+                        self.status = "已完成 LLM 历史归档".to_owned();
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+
                 if ui.button("重置默认值").clicked() {
                     self.md_settings = crate::app::MarkdownSettings::default();
                     self.refresh_tree();
@@ -987,6 +1042,85 @@ impl TextToolApp {
             self.save_config();
         }
         self.show_settings_window = open;
+    }
+
+    /// Draw crash-recovery dialog when leftover `.swp` files are found on project open.
+    pub(super) fn draw_recovery_dialog(&mut self, ctx: &Context) {
+        if self.pending_recovery.is_empty() {
+            return;
+        }
+
+        let mut dismiss = false;
+        let mut recover_idx: Option<usize> = None;
+        let mut discard_idx: Option<usize> = None;
+
+        egui::Window::new("⚠ 检测到草稿恢复文件")
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .min_width(420.0)
+            .show(ctx, |ui| {
+                ui.label("程序上次运行时可能意外退出，发现以下未保存的草稿文件：");
+                ui.add_space(4.0);
+
+                egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                    for (i, swp) in self.pending_recovery.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let name = swp
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("未知文件");
+                            ui.label(egui::RichText::new(name).monospace().small());
+                            if ui.small_button("恢复").clicked() {
+                                recover_idx = Some(i);
+                            }
+                            if ui.small_button("丢弃").clicked() {
+                                discard_idx = Some(i);
+                            }
+                        });
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("全部丢弃").clicked() {
+                        dismiss = true;
+                    }
+                    ui.label(
+                        egui::RichText::new("「恢复」将以 .swp 内容覆盖原文件")
+                            .small()
+                            .color(egui::Color32::from_gray(140)),
+                    );
+                });
+            });
+
+        if let Some(i) = recover_idx {
+            if i < self.pending_recovery.len() {
+                let swp_path = self.pending_recovery[i].clone();
+                // The original file path = swp path with .swp extension removed
+                let orig = swp_path.with_extension("");
+                if let Ok(content) = std::fs::read_to_string(&swp_path) {
+                    let _ = std::fs::write(&orig, &content);
+                }
+                let _ = std::fs::remove_file(&swp_path);
+                self.pending_recovery.remove(i);
+                self.status = format!("已恢复: {}", orig.display());
+            }
+        } else if let Some(i) = discard_idx {
+            if i < self.pending_recovery.len() {
+                let swp_path = self.pending_recovery[i].clone();
+                let _ = std::fs::remove_file(&swp_path);
+                self.pending_recovery.remove(i);
+                self.status = "已丢弃草稿".to_owned();
+            }
+        } else if dismiss {
+            for swp in &self.pending_recovery {
+                let _ = std::fs::remove_file(swp);
+            }
+            self.pending_recovery.clear();
+            self.status = "已清除所有草稿文件".to_owned();
+        }
     }
 
     /// Draw the rename file dialog (triggered by F2 or context menu).

@@ -206,6 +206,10 @@ pub struct TextToolApp {
     pub(super) show_command_palette: bool,
     pub(super) command_palette_query: String,
     pub(super) command_palette_selection: usize,
+
+    // ── Crash recovery ────────────────────────────────────────────────────────
+    /// `.swp` draft files found on project open — user is prompted to recover.
+    pub(super) pending_recovery: Vec<std::path::PathBuf>,
 }
 
 #[derive(Debug)]
@@ -465,6 +469,7 @@ impl TextToolApp {
             show_command_palette: false,
             command_palette_query: String::new(),
             command_palette_selection: 0,
+            pending_recovery: vec![],
         };
 
         // Apply saved configuration (LLM settings, MD settings, last project).
@@ -524,6 +529,9 @@ impl TextToolApp {
                 }
             }
         }
+
+        // Scan for leftover .swp draft files (crash recovery).
+        self.pending_recovery = crate::app::sync::scan_swp_files(&path);
     }
 
     pub(super) fn refresh_tree(&mut self) {
@@ -965,6 +973,7 @@ impl eframe::App for TextToolApp {
         self.draw_search_window(ctx);
         self.draw_template_dialog(ctx);
         self.draw_command_palette(ctx);
+        self.draw_recovery_dialog(ctx);
     }
 }
 
