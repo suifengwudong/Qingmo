@@ -428,13 +428,16 @@ impl TextToolApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Ctrl+B 粗体  Ctrl+I 斜体  Ctrl+Z 撤销  Ctrl+S 保存  Ctrl+滚轮 缩放")
+                        RichText::new("Ctrl+B 粗体  Ctrl+I 斜体  Ctrl+Z 撤销  Ctrl+S 保存  Ctrl+F 查找  Ctrl+H 替换")
                             .small()
                             .color(Color32::from_gray(120)),
                     );
                 });
             });
             ui.separator();
+
+            // Find / Replace bar (visible when Ctrl+F / Ctrl+H triggered)
+            self.draw_find_bar_ui(ui, ctx);
 
             let available = ui.available_size();
 

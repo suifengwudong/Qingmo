@@ -178,6 +178,9 @@ pub struct TextToolApp {
 
     // ── Novel template dialog ─────────────────────────────────────────────────
     pub(super) show_template_dialog: bool,
+
+    // ── Find & Replace bar ────────────────────────────────────────────────────
+    pub(super) find_bar: Option<FindBar>,
 }
 
 #[derive(Debug)]
@@ -190,6 +193,85 @@ pub(super) struct NewFileDialog {
 pub(super) struct RenameDialog {
     pub(super) path: PathBuf,
     pub(super) new_name: String,
+}
+
+// ── Find / Replace bar ────────────────────────────────────────────────────────
+
+pub(super) struct FindBar {
+    pub query: String,
+    pub replace: String,
+    pub case_sensitive: bool,
+    pub replace_mode: bool,
+    /// Cached byte-offset ranges `(start, end)` of all current matches in the
+    /// left editor's content.  Refreshed whenever `query` or `case_sensitive`
+    /// changes.
+    pub match_ranges: Vec<(usize, usize)>,
+    /// Index into `match_ranges` that is currently "selected".
+    pub current_match: usize,
+}
+
+impl FindBar {
+    pub fn new(replace_mode: bool) -> Self {
+        Self {
+            query: String::new(),
+            replace: String::new(),
+            case_sensitive: false,
+            replace_mode,
+            match_ranges: Vec::new(),
+            current_match: 0,
+        }
+    }
+
+    /// Rebuild `match_ranges` by scanning `text` for `self.query`.
+    pub fn refresh_matches(&mut self, text: &str) {
+        self.match_ranges.clear();
+        self.current_match = 0;
+        if self.query.is_empty() {
+            return;
+        }
+        let (haystack, needle): (std::borrow::Cow<str>, std::borrow::Cow<str>) =
+            if self.case_sensitive {
+                (std::borrow::Cow::Borrowed(text), std::borrow::Cow::Borrowed(&self.query))
+            } else {
+                (std::borrow::Cow::Owned(text.to_lowercase()), std::borrow::Cow::Owned(self.query.to_lowercase()))
+            };
+        let nlen = needle.len();
+        if nlen == 0 {
+            return;
+        }
+        let mut start = 0usize;
+        loop {
+            match haystack[start..].find(needle.as_ref()) {
+                Some(pos) => {
+                    let abs = start + pos;
+                    self.match_ranges.push((abs, abs + nlen));
+                    start = abs + nlen;
+                    if start >= haystack.len() {
+                        break;
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+
+    pub fn go_next(&mut self) {
+        if self.match_ranges.is_empty() {
+            return;
+        }
+        self.current_match = (self.current_match + 1) % self.match_ranges.len();
+    }
+
+    pub fn go_prev(&mut self) {
+        if self.match_ranges.is_empty() {
+            return;
+        }
+        if self.current_match == 0 {
+            self.current_match = self.match_ranges.len() - 1;
+        } else {
+            self.current_match -= 1;
+        }
+    }
 }
 
 impl TextToolApp {
@@ -279,6 +361,7 @@ impl TextToolApp {
             struct_json_snapshot: None,
             last_active_panel: Panel::Novel,
             show_template_dialog: false,
+            find_bar: None,
         };
 
         // Apply saved configuration (LLM settings, MD settings, last project).
@@ -813,8 +896,8 @@ mod tests {
             kind: RelationKind::Enemy,
             note: String::new(),
         });
-        let json = serde_json::to_string(&obj).unwrap();
-        let d: WorldObject = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&obj).expect("WorldObject serialization should succeed");
+        let d: WorldObject = serde_json::from_str(&json).expect("WorldObject deserialization should succeed");
         assert_eq!(d.name, "主角");
         assert_eq!(d.kind, ObjectKind::Character);
         assert_eq!(d.links[0].kind, RelationKind::Enemy);
@@ -874,8 +957,8 @@ mod tests {
         node.tag = ChapterTag::Foreshadow;
         node.done = true;
         node.linked_objects.push("主角".to_owned());
-        let json = serde_json::to_string(&node).unwrap();
-        let d: StructNode = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&node).expect("StructNode serialization should succeed");
+        let d: StructNode = serde_json::from_str(&json).expect("StructNode deserialization should succeed");
         assert_eq!(d.title, "序章");
         assert_eq!(d.tag, ChapterTag::Foreshadow);
         assert!(d.done);
@@ -888,8 +971,8 @@ mod tests {
     fn test_node_at() {
         let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
         roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
-        assert_eq!(node_at(&roots, &[0]).unwrap().title, "第一卷");
-        assert_eq!(node_at(&roots, &[0, 0]).unwrap().title, "第一章");
+        assert_eq!(node_at(&roots, &[0]).expect("node should exist at [0]").title, "第一卷");
+        assert_eq!(node_at(&roots, &[0, 0]).expect("node should exist at [0,0]").title, "第一章");
         assert!(node_at(&roots, &[1]).is_none());
     }
 
@@ -897,7 +980,7 @@ mod tests {
     fn test_node_at_mut() {
         let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
         roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
-        node_at_mut(&mut roots, &[0, 0]).unwrap().done = true;
+        node_at_mut(&mut roots, &[0, 0]).expect("node should exist at [0,0]").done = true;
         assert!(roots[0].children[0].done);
     }
 
@@ -985,8 +1068,8 @@ mod tests {
         let mut m = Milestone::new("发布 v1.0");
         m.description = "第一个正式版本".to_owned();
         m.completed = true;
-        let json = serde_json::to_string(&m).unwrap();
-        let d: Milestone = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&m).expect("Milestone serialization should succeed");
+        let d: Milestone = serde_json::from_str(&json).expect("Milestone deserialization should succeed");
         assert_eq!(d.name, "发布 v1.0");
         assert_eq!(d.description, "第一个正式版本");
         assert!(d.completed);
@@ -1067,8 +1150,8 @@ mod tests {
             use_local: false,
             system_prompt: "你是一个写作助手".to_owned(),
         };
-        let json = serde_json::to_string(&cfg).unwrap();
-        let d: LlmConfig = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&cfg).expect("config serialization should succeed");
+        let d: LlmConfig = serde_json::from_str(&json).expect("LlmConfig deserialization should succeed");
         assert_eq!(d.model_path, "llama2");
         assert_eq!(d.api_url, "http://localhost:11434/api/generate");
         assert!((d.temperature - 0.8).abs() < 1e-5);
@@ -1084,8 +1167,8 @@ mod tests {
             default_to_preview: true,
             ..MarkdownSettings::default()
         };
-        let json = serde_json::to_string(&s).unwrap();
-        let d: MarkdownSettings = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&s).expect("MarkdownSettings serialization should succeed");
+        let d: MarkdownSettings = serde_json::from_str(&json).expect("MarkdownSettings deserialization should succeed");
         assert!((d.preview_font_size - 18.0).abs() < 1e-5);
         assert!(d.default_to_preview);
     }
@@ -1110,8 +1193,8 @@ mod tests {
             auto_load: true,
             theme: AppTheme::Dark,
         };
-        let json = serde_json::to_string_pretty(&cfg).unwrap();
-        let d: AppConfig = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string_pretty(&cfg).expect("AppConfig serialization should succeed");
+        let d: AppConfig = serde_json::from_str(&json).expect("AppConfig deserialization should succeed");
         assert_eq!(d.llm_config.model_path, "phi2");
         assert_eq!(d.md_settings.preview_font_size, 16.0);
         assert_eq!(d.last_project, Some("/home/user/my_novel".to_owned()));
@@ -1125,13 +1208,13 @@ mod tests {
     fn test_load_foreshadows_from_md_via_files() {
         let dir = std::env::temp_dir().join("qingmo_test_fs");
         let content_dir = dir.join("Content");
-        std::fs::create_dir_all(&content_dir).unwrap();
+        std::fs::create_dir_all(&content_dir).expect("test directory creation should succeed");
         let md_path = content_dir.join("伏笔.md");
         let md = "# 伏笔列表\n\n## 神秘信件 ✅ 已解决\n\n某内容\n\n## 古剑来历 ⏳ 未解决\n\n";
-        std::fs::write(&md_path, md).unwrap();
+        std::fs::write(&md_path, md).expect("test MD file write should succeed");
 
         // Parse manually using the same logic as load_foreshadows_from_md
-        let text = std::fs::read_to_string(&md_path).unwrap();
+        let text = std::fs::read_to_string(&md_path).expect("test MD file read should succeed");
         let mut foreshadows = Vec::new();
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("## ") {
@@ -1161,17 +1244,17 @@ mod tests {
     fn test_load_world_objects_roundtrip() {
         let dir = std::env::temp_dir().join("qingmo_test_wo");
         let design_dir = dir.join("Design");
-        std::fs::create_dir_all(&design_dir).unwrap();
+        std::fs::create_dir_all(&design_dir).expect("test directory creation should succeed");
 
         let objects = vec![
             WorldObject::new("林枫", ObjectKind::Character),
             WorldObject::new("灵剑", ObjectKind::Item),
         ];
-        let json = serde_json::to_string_pretty(&objects).unwrap();
-        std::fs::write(design_dir.join("世界对象.json"), &json).unwrap();
+        let json = serde_json::to_string_pretty(&objects).expect("WorldObject list serialization should succeed");
+        std::fs::write(design_dir.join("世界对象.json"), &json).expect("test JSON file write should succeed");
 
-        let text = std::fs::read_to_string(design_dir.join("世界对象.json")).unwrap();
-        let loaded: Vec<WorldObject> = serde_json::from_str(&text).unwrap();
+        let text = std::fs::read_to_string(design_dir.join("世界对象.json")).expect("test JSON file read should succeed");
+        let loaded: Vec<WorldObject> = serde_json::from_str(&text).expect("WorldObject list deserialization should succeed");
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].name, "林枫");
         assert_eq!(loaded[1].kind, ObjectKind::Item);
@@ -1184,17 +1267,17 @@ mod tests {
     #[test]
     fn test_search_dir_finds_matches() {
         let dir = std::env::temp_dir().join("qingmo_test_search");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("chapter1.md"), "# 第一章\n\n主角走进了森林。").unwrap();
-        std::fs::write(dir.join("notes.json"), "{\"title\":\"主角笔记\"}").unwrap();
-        std::fs::write(dir.join("ignore.txt"), "主角 should not be found").unwrap();
+        std::fs::create_dir_all(&dir).expect("test directory creation should succeed");
+        std::fs::write(dir.join("chapter1.md"), "# 第一章\n\n主角走进了森林。").expect("test MD file write should succeed");
+        std::fs::write(dir.join("notes.json"), "{\"title\":\"主角笔记\"}").expect("test JSON file write should succeed");
+        std::fs::write(dir.join("ignore.txt"), "主角 should not be found").expect("test TXT file write should succeed");
 
         let mut results = Vec::new();
         crate::app::search::search_dir(&dir, "主角", &mut results);
 
         // Should find matches in .md and .json but not .txt
         assert!(!results.is_empty());
-        let paths: Vec<_> = results.iter().map(|r| r.file_path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let paths: Vec<_> = results.iter().map(|r| r.file_path.file_name().expect("file should have a name").to_string_lossy().into_owned()).collect();
         assert!(paths.iter().any(|p| p.ends_with(".md")));
         assert!(paths.iter().any(|p| p.ends_with(".json")));
         assert!(!paths.iter().any(|p| p.ends_with(".txt")));
@@ -1208,17 +1291,17 @@ mod tests {
     fn test_copy_dir_all() {
         let src = std::env::temp_dir().join("qingmo_test_copy_src");
         let dst = std::env::temp_dir().join("qingmo_test_copy_dst");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("file1.md"), "hello").unwrap();
+        std::fs::create_dir_all(&src).expect("test source directory creation should succeed");
+        std::fs::write(src.join("file1.md"), "hello").expect("test file write should succeed");
         let sub = src.join("subdir");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(sub.join("file2.json"), "{}").unwrap();
+        std::fs::create_dir_all(&sub).expect("test subdirectory creation should succeed");
+        std::fs::write(sub.join("file2.json"), "{}").expect("test file write should succeed");
 
-        crate::app::search::copy_dir_all(&src, &dst).unwrap();
+        crate::app::search::copy_dir_all(&src, &dst).expect("directory copy should succeed");
 
         assert!(dst.join("file1.md").exists());
         assert!(dst.join("subdir").join("file2.json").exists());
-        let content = std::fs::read_to_string(dst.join("file1.md")).unwrap();
+        let content = std::fs::read_to_string(dst.join("file1.md")).expect("test file read should succeed");
         assert_eq!(content, "hello");
 
         let _ = std::fs::remove_dir_all(&src);
@@ -1241,7 +1324,7 @@ mod tests {
     fn test_markdown_settings_hide_json_roundtrip() {
         // Old JSON without new fields should deserialize with defaults.
         let old_json = r#"{"preview_font_size":14.0,"default_to_preview":false}"#;
-        let s: MarkdownSettings = serde_json::from_str(old_json).unwrap();
+        let s: MarkdownSettings = serde_json::from_str(old_json).expect("old MarkdownSettings JSON should deserialize with defaults");
         assert!(s.hide_json);        // should default to true
         assert_eq!(s.tab_size, 2);   // should default to 2
         assert!((s.editor_font_size - 13.0).abs() < 1e-5); // should default to 13.0
@@ -1253,19 +1336,19 @@ mod tests {
             r#"{"llm_config":{"model_path":"","api_url":"","temperature":0.7,"max_tokens":512,"use_local":true,"system_prompt":""},
                 "md_settings":{"preview_font_size":14.0,"default_to_preview":false},
                 "last_project":null,"auto_load":false}"#
-        ).unwrap();
+        ).expect("AppConfig deserialization should succeed");
         assert_eq!(cfg.theme, AppTheme::Dark); // serde default
     }
 
     #[test]
     fn test_file_node_from_path_filtered_hides_json() {
         let dir = std::env::temp_dir().join("qingmo_test_filetree");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("chapter1.md"), "hello").unwrap();
-        std::fs::write(dir.join("data.json"), "{}").unwrap();
+        std::fs::create_dir_all(&dir).expect("test directory creation should succeed");
+        std::fs::write(dir.join("chapter1.md"), "hello").expect("test file write should succeed");
+        std::fs::write(dir.join("data.json"), "{}").expect("test file write should succeed");
 
-        let node_show = FileNode::from_path_filtered(&dir, false).unwrap();
-        let node_hide = FileNode::from_path_filtered(&dir, true).unwrap();
+        let node_show = FileNode::from_path_filtered(&dir, false).expect("FileNode creation should succeed");
+        let node_hide = FileNode::from_path_filtered(&dir, true).expect("FileNode creation with hide_json should succeed");
 
         let show_names: Vec<_> = node_show.children.iter().map(|n| &n.name).collect();
         let hide_names: Vec<_> = node_hide.children.iter().map(|n| &n.name).collect();
@@ -1275,5 +1358,69 @@ mod tests {
         assert!(hide_names.iter().any(|n| n.as_str() == "chapter1.md"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── FindBar tests ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_find_bar_refresh_matches_ascii() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.refresh_matches("hello world hello");
+        assert_eq!(bar.match_ranges.len(), 2);
+        assert_eq!(bar.match_ranges[0], (0, 5));
+        assert_eq!(bar.match_ranges[1], (12, 17));
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_case_insensitive() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.case_sensitive = false;
+        bar.refresh_matches("Hello HELLO hello");
+        assert_eq!(bar.match_ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_case_sensitive() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.case_sensitive = true;
+        bar.refresh_matches("Hello HELLO hello");
+        assert_eq!(bar.match_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_chinese() {
+        let mut bar = FindBar::new(false);
+        bar.query = "世界".to_owned();
+        bar.refresh_matches("你好世界，再见世界");
+        assert_eq!(bar.match_ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_find_bar_navigate() {
+        let mut bar = FindBar::new(false);
+        bar.query = "a".to_owned();
+        bar.refresh_matches("a b a c a");
+        assert_eq!(bar.match_ranges.len(), 3);
+        assert_eq!(bar.current_match, 0);
+        bar.go_next();
+        assert_eq!(bar.current_match, 1);
+        bar.go_prev();
+        assert_eq!(bar.current_match, 0);
+        // Wrap around backward
+        bar.go_prev();
+        assert_eq!(bar.current_match, 2);
+        // Wrap around forward
+        bar.go_next();
+        assert_eq!(bar.current_match, 0);
+    }
+
+    #[test]
+    fn test_find_bar_empty_query() {
+        let mut bar = FindBar::new(false);
+        bar.refresh_matches("some text");
+        assert!(bar.match_ranges.is_empty());
     }
 }
