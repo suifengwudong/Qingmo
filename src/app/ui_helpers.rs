@@ -43,6 +43,10 @@ impl TextToolApp {
                         self.export_chapters_merged();
                         ui.close_menu();
                     }
+                    if ui.button("导出为纯文本（.txt）…").clicked() {
+                        self.export_plain_text();
+                        ui.close_menu();
+                    }
                     if ui.button("备份项目到文件夹…").clicked() {
                         self.backup_project();
                         ui.close_menu();
@@ -312,6 +316,9 @@ impl TextToolApp {
                 ctrl_scroll,                                        // Ctrl+scroll
                 !ctrl && !shift && i.key_pressed(Key::F2),         // F2 rename
                 ctrl && !shift && i.key_pressed(Key::P),           // Ctrl+P preview toggle
+                ctrl && !shift && i.key_pressed(Key::F),           // Ctrl+F find
+                ctrl && !shift && i.key_pressed(Key::H),           // Ctrl+H find+replace
+                i.key_pressed(Key::Escape),                        // Esc (close find bar)
             )
         });
         if input.0 {
@@ -409,6 +416,24 @@ impl TextToolApp {
                 self.left_preview_mode = !self.left_preview_mode;
             }
         }
+        // Ctrl+F: open find bar (find-only mode)
+        if input.13 {
+            if self.find_bar.is_none() {
+                self.find_bar = Some(crate::app::FindBar::new(false));
+            }
+            // Re-trigger focus so the find box gets focus on next frame
+        }
+        // Ctrl+H: open find bar in replace mode
+        if input.14 {
+            match &mut self.find_bar {
+                Some(bar) => bar.replace_mode = true,
+                None => self.find_bar = Some(crate::app::FindBar::new(true)),
+            }
+        }
+        // Esc: close find bar if open
+        if input.15 && self.find_bar.is_some() {
+            self.find_bar = None;
+        }
     }
 
     /// Insert `**...**` (bold) or `*...*` (italic) around the current selection
@@ -479,6 +504,255 @@ impl TextToolApp {
                 }
             }
         }
+    }
+
+    // ── Find / Replace bar ────────────────────────────────────────────────────
+
+    /// Render the inline find/replace toolbar above the editor.
+    ///
+    /// Should be called inside the editor's central panel `ui` block.
+    /// Uses deferred-action flags to avoid simultaneous mutable borrows of
+    /// different fields.
+    pub(super) fn draw_find_bar_ui(&mut self, ui: &mut egui::Ui, ctx: &Context) {
+        if self.find_bar.is_none() {
+            return;
+        }
+
+        let mut need_refresh = false;
+        let mut go_next      = false;
+        let mut go_prev      = false;
+        let mut do_replace_one  = false;
+        let mut do_replace_all  = false;
+        let mut close        = false;
+
+        if let Some(bar) = &mut self.find_bar {
+            egui::Frame::none()
+                .fill(Color32::from_gray(45))
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("🔍").size(13.0));
+
+                        // ── Query input ───────────────────────────────────────
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut bar.query)
+                                .desired_width(200.0)
+                                .hint_text("查找…"),
+                        );
+                        resp.request_focus();
+                        if resp.changed() {
+                            need_refresh = true;
+                        }
+                        if resp.lost_focus()
+                            && ctx.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            if ctx.input(|i| i.modifiers.shift) {
+                                go_prev = true;
+                            } else {
+                                go_next = true;
+                            }
+                        }
+
+                        // ── Match count ───────────────────────────────────────
+                        let total = bar.match_ranges.len();
+                        if bar.query.is_empty() {
+                            // nothing
+                        } else if total == 0 {
+                            ui.label(
+                                RichText::new("无匹配")
+                                    .small()
+                                    .color(Color32::from_rgb(220, 80, 80)),
+                            );
+                        } else {
+                            ui.label(
+                                RichText::new(format!("{}/{total}", bar.current_match + 1))
+                                    .small()
+                                    .color(Color32::from_gray(180)),
+                            );
+                        }
+
+                        if ui.small_button("▲").on_hover_text("上一个 (Shift+Enter)").clicked() {
+                            go_prev = true;
+                        }
+                        if ui.small_button("▼").on_hover_text("下一个 (Enter)").clicked() {
+                            go_next = true;
+                        }
+
+                        // ── Case-sensitive toggle ─────────────────────────────
+                        let cs_color = if bar.case_sensitive {
+                            Color32::from_rgb(30, 140, 220)
+                        } else {
+                            Color32::from_gray(150)
+                        };
+                        if ui.button(RichText::new("Aa").size(11.0).color(cs_color))
+                            .on_hover_text("区分大小写")
+                            .clicked()
+                        {
+                            bar.case_sensitive = !bar.case_sensitive;
+                            need_refresh = true;
+                        }
+
+                        // ── Mode toggle ───────────────────────────────────────
+                        let mode_icon = if bar.replace_mode { "▾" } else { "▸" };
+                        if ui.small_button(mode_icon)
+                            .on_hover_text(if bar.replace_mode { "折叠替换栏" } else { "展开替换栏" })
+                            .clicked()
+                        {
+                            bar.replace_mode = !bar.replace_mode;
+                        }
+
+                        // ── Close ─────────────────────────────────────────────
+                        if ui.small_button("✕").on_hover_text("关闭 (Esc)").clicked() {
+                            close = true;
+                        }
+                    });
+
+                    // ── Replace row (only in replace mode) ────────────────────
+                    if bar.replace_mode {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("🔄").size(13.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut bar.replace)
+                                    .desired_width(200.0)
+                                    .hint_text("替换为…"),
+                            );
+                            if ui.button("替换").on_hover_text("替换当前匹配项").clicked() {
+                                do_replace_one = true;
+                            }
+                            if ui.button("全部替换").on_hover_text("替换文件中所有匹配项").clicked() {
+                                do_replace_all = true;
+                            }
+                        });
+                    }
+                });
+
+            ui.separator();
+        }
+
+        // ── Apply deferred actions (avoids simultaneous borrow conflicts) ─────
+
+        if need_refresh {
+            // Refresh uses self.find_bar (mut) and self.left_file (ref) —
+            // these are disjoint fields so the borrow checker allows it.
+            let content: String = self.left_file.as_ref()
+                .map(|f| f.content.clone())
+                .unwrap_or_default();
+            if let Some(bar) = &mut self.find_bar {
+                bar.refresh_matches(&content);
+            }
+        }
+
+        if go_next {
+            if let Some(bar) = &mut self.find_bar {
+                bar.go_next();
+            }
+            self.select_current_match(ctx);
+        }
+        if go_prev {
+            if let Some(bar) = &mut self.find_bar {
+                bar.go_prev();
+            }
+            self.select_current_match(ctx);
+        }
+
+        if do_replace_one {
+            self.replace_current_match(ctx);
+        }
+        if do_replace_all {
+            self.replace_all_matches(ctx);
+        }
+        if close {
+            self.find_bar = None;
+        }
+    }
+
+    /// Move the TextEdit cursor/selection to the current find-bar match.
+    pub(super) fn select_current_match(&self, ctx: &Context) {
+        let Some(bar) = &self.find_bar else { return };
+        let Some(&(start_byte, end_byte)) = bar.match_ranges.get(bar.current_match) else { return };
+        let Some(content) = self.left_file.as_ref().map(|f| &f.content) else { return };
+
+        // Convert byte offsets to char indices (required by egui's CCursor).
+        let start_char = content[..start_byte].chars().count();
+        let end_char   = content[..end_byte].chars().count();
+
+        let te_id = egui::Id::new("left_editor_main");
+        if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, te_id) {
+            let range = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(start_char),
+                egui::text::CCursor::new(end_char),
+            );
+            state.cursor.set_char_range(Some(range));
+            egui::text_edit::TextEditState::store(state, ctx, te_id);
+        }
+    }
+
+    /// Replace the match at `current_match` with `bar.replace` and advance.
+    pub(super) fn replace_current_match(&mut self, ctx: &Context) {
+        let Some(bar) = &self.find_bar else { return };
+        let Some(&(start_byte, end_byte)) = bar.match_ranges.get(bar.current_match) else { return };
+        let replace_with = bar.replace.clone();
+
+        if let Some(f) = &mut self.left_file {
+            // Save undo snapshot before mutating.
+            let prev = f.content.clone();
+            self.left_undo_stack.push_back(prev);
+            if self.left_undo_stack.len() > 200 {
+                self.left_undo_stack.pop_front();
+            }
+
+            if let Some(f) = &mut self.left_file {
+                f.content.replace_range(start_byte..end_byte, &replace_with);
+                f.modified = true;
+            }
+        }
+
+        // Refresh matches after replacement and select the next one.
+        let content: String = self.left_file.as_ref()
+            .map(|f| f.content.clone())
+            .unwrap_or_default();
+        if let Some(bar) = &mut self.find_bar {
+            bar.refresh_matches(&content);
+        }
+        self.select_current_match(ctx);
+    }
+
+    /// Replace ALL matches with `bar.replace` in one operation.
+    pub(super) fn replace_all_matches(&mut self, ctx: &Context) {
+        let Some(bar) = &self.find_bar else { return };
+        if bar.match_ranges.is_empty() {
+            return;
+        }
+        let replace_with = bar.replace.clone();
+        let count = bar.match_ranges.len();
+
+        if let Some(f) = &mut self.left_file {
+            // Save undo snapshot.
+            let prev = f.content.clone();
+            self.left_undo_stack.push_back(prev.clone());
+            if self.left_undo_stack.len() > 200 {
+                self.left_undo_stack.pop_front();
+            }
+            // Replace in reverse order to keep earlier byte offsets valid.
+            let ranges: Vec<(usize, usize)> = self.find_bar.as_ref()
+                .map(|b| b.match_ranges.iter().rev().copied().collect())
+                .unwrap_or_default();
+            for (s, e) in ranges {
+                f.content.replace_range(s..e, &replace_with);
+            }
+            f.modified = true;
+        }
+
+        self.status = format!("已替换 {count} 处匹配");
+
+        // Refresh matches (should now be 0 if replace_with != query).
+        let content: String = self.left_file.as_ref()
+            .map(|f| f.content.clone())
+            .unwrap_or_default();
+        if let Some(bar) = &mut self.find_bar {
+            bar.refresh_matches(&content);
+        }
+        self.select_current_match(ctx);
     }
 
     /// Draw the floating editor settings window.
