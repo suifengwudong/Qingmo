@@ -206,6 +206,36 @@ pub(in crate::app) fn count_words_in_dir(dir: &std::path::Path) -> usize {
     }).sum()
 }
 
+/// Return `(chapter_name, word_count)` pairs for every `.md` file in `dir`,
+/// sorted by filename so the order matches the chapter tree.
+pub(in crate::app) fn count_words_per_chapter(
+    dir: &std::path::Path,
+) -> Vec<(String, usize)> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return vec![] };
+    let mut items: Vec<(String, usize)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|ext| ext.to_str()) == Some("md") {
+                let name = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_owned();
+                let words = std::fs::read_to_string(&p)
+                    .ok()
+                    .map(|t| count_words(&t))
+                    .unwrap_or(0);
+                Some((name, words))
+            } else {
+                None
+            }
+        })
+        .collect();
+    items.sort_by(|a, b| a.0.cmp(&b.0));
+    items
+}
+
 
 ///
 /// Handles:
@@ -555,5 +585,56 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dst);
+    }
+
+    // ── count_words_in_dir / count_words_per_chapter ──────────────────────────
+
+    #[test]
+    fn test_count_words_in_dir_sums_all_md_files() {
+        let dir = tmp_dir("cw_in_dir");
+        // "你好世界" = 4 CJK characters → 4 word-tokens
+        std::fs::write(dir.join("ch1.md"), "你好世界").unwrap();
+        // "hello world foo" = 3 Latin word-tokens
+        std::fs::write(dir.join("ch2.md"), "hello world foo").unwrap();
+        std::fs::write(dir.join("data.json"), "{}").unwrap(); // ignored
+
+        let total = count_words_in_dir(&dir);
+        assert_eq!(total, 7, "4 CJK chars + 3 Latin words = 7");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_count_words_in_dir_empty_dir_returns_zero() {
+        let dir = tmp_dir("cw_in_dir_empty");
+        assert_eq!(count_words_in_dir(&dir), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_count_words_per_chapter_returns_sorted_entries() {
+        let dir = tmp_dir("cw_per_chap");
+        // "春风又绿江南岸" = 7 CJK characters
+        std::fs::write(dir.join("第二章.md"), "春风又绿江南岸").unwrap();
+        // "hello world" = 2 Latin word-tokens
+        std::fs::write(dir.join("第一章.md"), "hello world").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+
+        let result = count_words_per_chapter(&dir);
+        assert_eq!(result.len(), 2, "only .md files counted");
+        // sorted by filename: 第一章 < 第二章
+        assert_eq!(result[0].0, "第一章");
+        assert_eq!(result[0].1, 2);
+        assert_eq!(result[1].0, "第二章");
+        assert_eq!(result[1].1, 7);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_count_words_per_chapter_empty_dir() {
+        let dir = tmp_dir("cw_per_chap_empty");
+        assert!(count_words_per_chapter(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

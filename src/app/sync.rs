@@ -17,6 +17,27 @@ pub(super) fn write_atomically(path: &Path, content: &str) -> std::io::Result<()
     Ok(())
 }
 
+/// Recursively scan `project_dir` for leftover `.swp` files (crash drafts).
+/// Returns a sorted list of paths so the UI can present them to the user.
+pub(super) fn scan_swp_files(project_dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    scan_swp_recursive(project_dir, &mut found);
+    found.sort();
+    found
+}
+
+fn scan_swp_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            scan_swp_recursive(&p, out);
+        } else if p.extension().and_then(|e| e.to_str()) == Some("swp") {
+            out.push(p);
+        }
+    }
+}
+
 // ── Data persistence helpers ──────────────────────────────────────────────────
 
 impl TextToolApp {
@@ -663,6 +684,38 @@ mod tests {
         assert!(!dir.join("Content").join("ch1.md").exists());
         assert!(!dir.join("Content").join("伏笔.md").exists());
         assert!(!dir.join("Design").join("世界对象.json").exists());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── scan_swp_files tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_scan_swp_files_finds_swp_in_subdirs() {
+        let dir = std::env::temp_dir().join("qingmo_test_scan_swp");
+        let chapters = dir.join("chapters");
+        std::fs::create_dir_all(&chapters).unwrap();
+
+        // A leftover .swp from a crash
+        std::fs::write(chapters.join("ch1.swp"), "draft content").unwrap();
+        // A normal file — should not be returned
+        std::fs::write(chapters.join("ch1.md"), "real content").unwrap();
+
+        let found = scan_swp_files(&dir);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].ends_with("ch1.swp"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_scan_swp_files_empty_when_none() {
+        let dir = std::env::temp_dir().join("qingmo_test_scan_swp_empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ch1.md"), "content").unwrap();
+
+        let found = scan_swp_files(&dir);
+        assert!(found.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
