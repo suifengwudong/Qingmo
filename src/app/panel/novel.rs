@@ -75,7 +75,7 @@ impl TextToolApp {
                         if self.file_tree_mode == FileTreeMode::Files {
                             if let Some(root) = self.project_root.clone() {
                                 if ui.small_button("➕").on_hover_text("新建文件").clicked() {
-                                    new_in = Some(root.join("Content"));
+                    new_in = Some(root.join("chapters"));
                                 }
                             }
                         }

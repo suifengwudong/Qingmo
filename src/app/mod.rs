@@ -488,11 +488,13 @@ impl TextToolApp {
     // ── Project operations ────────────────────────────────────────────────────
 
     pub(super) fn open_project(&mut self, path: PathBuf) {
+        // Migrate legacy layout before creating directories
+        self.project_root = Some(path.clone());
+        self.migrate_legacy_layout();
         // Ensure required subdirectories exist
-        for sub in &["Content", "Design", "废稿"] {
+        for sub in &["chapters", "data", "废稿"] {
             let _ = std::fs::create_dir_all(path.join(sub));
         }
-        self.project_root = Some(path.clone());
         self.last_project = Some(path.clone());
         self.refresh_tree();
         self.status = format!("已打开项目: {}", path.display());
@@ -502,15 +504,15 @@ impl TextToolApp {
         }
 
         // Load LLM history for this project.
-        let history_path = path.join("Design").join("llm_history.json");
+        let history_path = path.join("data").join("llm_history.json");
         self.llm_history = LlmHistory::load(&history_path);
         self.llm_history_path = Some(history_path);
 
-        // Snapshot word counts for all Content/*.md files so we can compute
+        // Snapshot word counts for all chapters/*.md files so we can compute
         // today's writing delta during this session.
         self.word_count_baseline.clear();
         self.today_added_words = 0;
-        let content_dir = path.join("Content");
+        let content_dir = path.join("chapters");
         if let Ok(entries) = std::fs::read_dir(&content_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
@@ -527,7 +529,7 @@ impl TextToolApp {
     pub(super) fn refresh_tree(&mut self) {
         let hide_json = self.md_settings.hide_json;
         if let Some(root) = &self.project_root {
-            self.file_tree = ["Content", "Design", "废稿"]
+            self.file_tree = ["chapters", "data", "废稿"]
                 .iter()
                 .filter_map(|sub| {
                     let p = root.join(sub);
