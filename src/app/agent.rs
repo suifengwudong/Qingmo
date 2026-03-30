@@ -265,7 +265,7 @@ impl Skill for GetFileContentSkill {
     fn name(&self) -> &str { "get_file_content" }
 
     fn description(&self) -> &str {
-        "读取项目中指定文件的完整内容；path 为相对于项目根目录的路径（如 Content/第一章.md）；支持 .md / .markdown / .json / .txt 文件"
+        "读取项目中指定文件的完整内容；path 为相对于项目根目录的路径（如 chapters/第一章.md）；支持 .md / .markdown / .json / .txt 文件"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -327,7 +327,7 @@ impl Skill for AddWorldObjectSkill {
     fn name(&self) -> &str { "add_world_object" }
 
     fn description(&self) -> &str {
-        "向项目添加新的世界对象（人物/场景/地点/道具/势力）并保存到 Design/世界对象.json；\
+        "向项目添加新的世界对象（人物/场景/地点/道具/势力）并保存到 data/world.json；\
          name 为名称，kind 为类型（人物/场景/地点/道具/势力/其他），description 为描述（可选），background 为背景故事（可选）"
     }
 
@@ -372,7 +372,7 @@ impl Skill for AddWorldObjectSkill {
 
         let json = serde_json::to_string_pretty(&objects)
             .map_err(|e| format!("序列化失败: {e}"))?;
-        let path = root.join("Design").join("世界对象.json");
+        let path = root.join("data").join("world.json");
         std::fs::create_dir_all(path.parent().unwrap())
             .map_err(|e| format!("创建目录失败: {e}"))?;
         std::fs::write(&path, &json)
@@ -380,7 +380,7 @@ impl Skill for AddWorldObjectSkill {
 
         Ok(serde_json::json!({
             "status": "success",
-            "message": format!("已添加对象「{name}」（{kind_str}）到 Design/世界对象.json，请在主界面「从文件加载」以更新显示")
+            "message": format!("已添加对象「{name}」（{kind_str}）到 data/world.json，请在主界面「从文件加载」以更新显示")
         }))
     }
 }
@@ -397,7 +397,7 @@ impl Skill for UpdateWorldObjectSkill {
     fn name(&self) -> &str { "update_world_object" }
 
     fn description(&self) -> &str {
-        "更新已有世界对象的描述（description）或背景故事（background）并保存到 Design/世界对象.json；\
+        "更新已有世界对象的描述（description）或背景故事（background）并保存到 data/world.json；\
          name 为要修改的对象名称（必填）"
     }
 
@@ -431,7 +431,7 @@ impl Skill for UpdateWorldObjectSkill {
         let root = self.project_root.as_ref().ok_or("项目未打开")?;
         let json = serde_json::to_string_pretty(&objects)
             .map_err(|e| format!("序列化失败: {e}"))?;
-        let path = root.join("Design").join("世界对象.json");
+        let path = root.join("data").join("world.json");
         std::fs::create_dir_all(path.parent().unwrap())
             .map_err(|e| format!("创建目录失败: {e}"))?;
         std::fs::write(&path, &json)
@@ -439,7 +439,7 @@ impl Skill for UpdateWorldObjectSkill {
 
         Ok(serde_json::json!({
             "status": "success",
-            "message": format!("已更新对象「{name}」并保存到 Design/世界对象.json，请在主界面「从文件加载」以更新显示")
+            "message": format!("已更新对象「{name}」并保存到 data/world.json，请在主界面「从文件加载」以更新显示")
         }))
     }
 }
@@ -456,7 +456,7 @@ impl Skill for DeleteWorldObjectSkill {
     fn name(&self) -> &str { "delete_world_object" }
 
     fn description(&self) -> &str {
-        "从项目中删除指定名称的世界对象，并保存到 Design/世界对象.json；name 为要删除的对象名称"
+        "从项目中删除指定名称的世界对象，并保存到 data/world.json；name 为要删除的对象名称"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -482,13 +482,13 @@ impl Skill for DeleteWorldObjectSkill {
         let root = self.project_root.as_ref().ok_or("项目未打开")?;
         let json = serde_json::to_string_pretty(&objects)
             .map_err(|e| format!("序列化失败: {e}"))?;
-        let path = root.join("Design").join("世界对象.json");
+        let path = root.join("data").join("world.json");
         std::fs::write(&path, &json)
             .map_err(|e| format!("写入失败: {e}"))?;
 
         Ok(serde_json::json!({
             "status": "success",
-            "message": format!("已删除对象「{name}」并保存到 Design/世界对象.json，请在主界面「从文件加载」以更新显示")
+            "message": format!("已删除对象「{name}」并保存到 data/world.json，请在主界面「从文件加载」以更新显示")
         }))
     }
 }
@@ -505,7 +505,7 @@ impl Skill for AddChapterNodeSkill {
     fn name(&self) -> &str { "add_chapter_node" }
 
     fn description(&self) -> &str {
-        "向章节结构添加新节点（总纲/卷/章/节）并保存到 Design/章节结构.json；\
+        "向章节结构添加新节点（总纲/卷/章/节）并保存到 data/structure.json；\
          title 为节点标题，kind 为层级类型（总纲/卷/章/节），summary 为摘要（可选）"
     }
 
@@ -549,7 +549,7 @@ impl Skill for AddChapterNodeSkill {
         let root = self.project_root.as_ref().ok_or("项目未打开")?;
         let json = serde_json::to_string_pretty(&roots)
             .map_err(|e| format!("序列化失败: {e}"))?;
-        let path = root.join("Design").join("章节结构.json");
+        let path = root.join("data").join("structure.json");
         std::fs::create_dir_all(path.parent().unwrap())
             .map_err(|e| format!("创建目录失败: {e}"))?;
         std::fs::write(&path, &json)
@@ -557,7 +557,7 @@ impl Skill for AddChapterNodeSkill {
 
         Ok(serde_json::json!({
             "status": "success",
-            "message": format!("已添加{kind_str}节点「{title}」到 Design/章节结构.json，请在主界面「从文件加载」以更新显示")
+            "message": format!("已添加{kind_str}节点「{title}」到 data/structure.json，请在主界面「从文件加载」以更新显示")
         }))
     }
 }
@@ -574,7 +574,7 @@ impl Skill for AddForeshadowSkill {
     fn name(&self) -> &str { "add_foreshadow" }
 
     fn description(&self) -> &str {
-        "向项目添加新伏笔并追加到 Content/伏笔.md；\
+        "向项目添加新伏笔并追加到 data/foreshadows.md；\
          name 为伏笔名称，description 为描述（可选），related_chapters 为关联章节列表（可选，逗号分隔）"
     }
 
@@ -605,7 +605,7 @@ impl Skill for AddForeshadowSkill {
         }
 
         let root = self.project_root.as_ref().ok_or("项目未打开")?;
-        let path = root.join("Content").join("伏笔.md");
+        let path = root.join("data").join("foreshadows.md");
 
         // Append to existing file (or create new).
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
@@ -624,7 +624,7 @@ impl Skill for AddForeshadowSkill {
 
         Ok(serde_json::json!({
             "status": "success",
-            "message": format!("已添加伏笔「{name}」到 Content/伏笔.md，请在主界面「从文件加载」以更新显示")
+            "message": format!("已添加伏笔「{name}」到 data/foreshadows.md，请在主界面「从文件加载」以更新显示")
         }))
     }
 }
@@ -641,7 +641,7 @@ impl Skill for ResolveForeshadowSkill {
     fn name(&self) -> &str { "resolve_foreshadow" }
 
     fn description(&self) -> &str {
-        "将指定伏笔标记为已解决，并更新 Content/伏笔.md；name 为要解决的伏笔名称"
+        "将指定伏笔标记为已解决，并更新 data/foreshadows.md；name 为要解决的伏笔名称"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -662,9 +662,9 @@ impl Skill for ResolveForeshadowSkill {
         }
 
         let root = self.project_root.as_ref().ok_or("项目未打开")?;
-        let path = root.join("Content").join("伏笔.md");
+        let path = root.join("data").join("foreshadows.md");
         let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("读取 Content/伏笔.md 失败: {e}"))?;
+            .map_err(|e| format!("读取 data/foreshadows.md 失败: {e}"))?;
 
         // Replace "## {name} ⏳ 未解决" with "## {name} ✅ 已解决"
         let updated = content.replace(
@@ -700,7 +700,7 @@ impl Skill for WriteFileContentSkill {
     fn name(&self) -> &str { "write_file_content" }
 
     fn description(&self) -> &str {
-        "将文本内容写入项目中的 Markdown 文件；path 为相对于项目根目录的路径（如 Content/第一章.md）；\
+        "将文本内容写入项目中的 Markdown 文件；path 为相对于项目根目录的路径（如 chapters/第一章.md）；\
          content 为要写入的文本；mode 为写入模式：overwrite（覆盖）或 append（追加，默认）"
     }
 
@@ -1316,9 +1316,9 @@ mod tests {
     #[test]
     fn test_list_project_files_with_project() {
         let dir = std::env::temp_dir().join("qingmo_test_list_files");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
-        std::fs::write(dir.join("Content").join("ch1.md"), "hello").unwrap();
-        std::fs::write(dir.join("Content").join("data.json"), "{}").unwrap();
+        std::fs::create_dir_all(dir.join("chapters")).unwrap();
+        std::fs::write(dir.join("chapters").join("ch1.md"), "hello").unwrap();
+        std::fs::write(dir.join("chapters").join("data.json"), "{}").unwrap();
 
         let skill = ListProjectFilesSkill(Some(dir.clone()));
         let result = skill.execute(&serde_json::json!({})).unwrap();
@@ -1335,7 +1335,7 @@ mod tests {
     #[test]
     fn test_get_file_content_no_project() {
         let skill = GetFileContentSkill(None);
-        let result = skill.execute(&serde_json::json!({"path": "Content/test.md"}));
+        let result = skill.execute(&serde_json::json!({"path": "chapters/test.md"}));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("项目未打开"));
     }
@@ -1343,12 +1343,12 @@ mod tests {
     #[test]
     fn test_get_file_content_reads_file() {
         let dir = std::env::temp_dir().join("qingmo_test_get_content");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
-        std::fs::write(dir.join("Content").join("story.md"), "# 故事\n\n正文内容").unwrap();
+        std::fs::create_dir_all(dir.join("chapters")).unwrap();
+        std::fs::write(dir.join("chapters").join("story.md"), "# 故事\n\n正文内容").unwrap();
 
         let skill = GetFileContentSkill(Some(dir.clone()));
-        let result = skill.execute(&serde_json::json!({"path": "Content/story.md"})).unwrap();
-        assert_eq!(result["path"], "Content/story.md");
+        let result = skill.execute(&serde_json::json!({"path": "chapters/story.md"})).unwrap();
+        assert_eq!(result["path"], "chapters/story.md");
         assert!(result["content"].as_str().unwrap().contains("正文内容"));
         assert!(result["length"].as_u64().unwrap() > 0);
 
@@ -1381,7 +1381,7 @@ mod tests {
     #[test]
     fn test_add_world_object_skill() {
         let dir = std::env::temp_dir().join("qingmo_test_add_obj");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         let skill = AddWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({
@@ -1390,7 +1390,7 @@ mod tests {
         assert_eq!(result["status"], "success");
 
         // Verify file was written with 3 objects
-        let content = std::fs::read_to_string(dir.join("Design").join("世界对象.json")).unwrap();
+        let content = std::fs::read_to_string(dir.join("data").join("world.json")).unwrap();
         let objs: Vec<WorldObject> = serde_json::from_str(&content).unwrap();
         assert_eq!(objs.len(), 3);
         assert!(objs.iter().any(|o| o.name == "新角色"));
@@ -1401,7 +1401,7 @@ mod tests {
     #[test]
     fn test_add_world_object_duplicate() {
         let dir = std::env::temp_dir().join("qingmo_test_add_obj_dup");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
         let skill = AddWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({"name": "李明", "kind": "人物"}));
         assert!(result.is_err());
@@ -1422,7 +1422,7 @@ mod tests {
     #[test]
     fn test_update_world_object_skill() {
         let dir = std::env::temp_dir().join("qingmo_test_upd_obj");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         let skill = UpdateWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({
@@ -1430,7 +1430,7 @@ mod tests {
         })).unwrap();
         assert_eq!(result["status"], "success");
 
-        let content = std::fs::read_to_string(dir.join("Design").join("世界对象.json")).unwrap();
+        let content = std::fs::read_to_string(dir.join("data").join("world.json")).unwrap();
         let objs: Vec<WorldObject> = serde_json::from_str(&content).unwrap();
         let obj = objs.iter().find(|o| o.name == "李明").unwrap();
         assert_eq!(obj.description, "更新后的描述");
@@ -1441,7 +1441,7 @@ mod tests {
     #[test]
     fn test_update_world_object_not_found() {
         let dir = std::env::temp_dir().join("qingmo_test_upd_obj_nf");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
         let skill = UpdateWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({"name": "不存在的人", "description": "x"}));
         assert!(result.is_err());
@@ -1454,13 +1454,13 @@ mod tests {
     #[test]
     fn test_delete_world_object_skill() {
         let dir = std::env::temp_dir().join("qingmo_test_del_obj");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         let skill = DeleteWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({"name": "李明"})).unwrap();
         assert_eq!(result["status"], "success");
 
-        let content = std::fs::read_to_string(dir.join("Design").join("世界对象.json")).unwrap();
+        let content = std::fs::read_to_string(dir.join("data").join("world.json")).unwrap();
         let objs: Vec<WorldObject> = serde_json::from_str(&content).unwrap();
         assert_eq!(objs.len(), 1);
         assert!(!objs.iter().any(|o| o.name == "李明"));
@@ -1471,10 +1471,10 @@ mod tests {
     #[test]
     fn test_delete_world_object_not_found() {
         let dir = std::env::temp_dir().join("qingmo_test_del_obj_nf");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
         // Write existing JSON first so delete doesn't panic on missing file
         let json = serde_json::to_string_pretty(&sample_objects()).unwrap();
-        std::fs::write(dir.join("Design").join("世界对象.json"), &json).unwrap();
+        std::fs::write(dir.join("data").join("world.json"), &json).unwrap();
 
         let skill = DeleteWorldObjectSkill { objects: sample_objects(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({"name": "不存在"}));
@@ -1488,7 +1488,7 @@ mod tests {
     #[test]
     fn test_add_chapter_node_skill() {
         let dir = std::env::temp_dir().join("qingmo_test_add_ch");
-        std::fs::create_dir_all(dir.join("Design")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         let skill = AddChapterNodeSkill { struct_roots: sample_roots(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({
@@ -1496,7 +1496,7 @@ mod tests {
         })).unwrap();
         assert_eq!(result["status"], "success");
 
-        let content = std::fs::read_to_string(dir.join("Design").join("章节结构.json")).unwrap();
+        let content = std::fs::read_to_string(dir.join("data").join("structure.json")).unwrap();
         let roots: Vec<StructNode> = serde_json::from_str(&content).unwrap();
         assert_eq!(roots.len(), 2);
         assert!(roots.iter().any(|n| n.title == "第二卷"));
@@ -1509,7 +1509,7 @@ mod tests {
     #[test]
     fn test_add_foreshadow_skill() {
         let dir = std::env::temp_dir().join("qingmo_test_add_fs");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         let skill = AddForeshadowSkill { foreshadows: sample_foreshadows(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({
@@ -1517,7 +1517,7 @@ mod tests {
         })).unwrap();
         assert_eq!(result["status"], "success");
 
-        let content = std::fs::read_to_string(dir.join("Content").join("伏笔.md")).unwrap();
+        let content = std::fs::read_to_string(dir.join("data").join("foreshadows.md")).unwrap();
         assert!(content.contains("新伏笔"));
         assert!(content.contains("第一章"));
 
@@ -1537,18 +1537,18 @@ mod tests {
     #[test]
     fn test_resolve_foreshadow_skill() {
         let dir = std::env::temp_dir().join("qingmo_test_resolve_fs");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
+        std::fs::create_dir_all(dir.join("data")).unwrap();
 
         // Write an initial foreshadow file
         let initial = "# 伏笔列表\n\n## 神秘信封 ⏳ 未解决\n\n第一章出现的信封\n\n";
-        std::fs::write(dir.join("Content").join("伏笔.md"), initial).unwrap();
+        std::fs::write(dir.join("data").join("foreshadows.md"), initial).unwrap();
 
         let mut fs = sample_foreshadows();
         let skill = ResolveForeshadowSkill { foreshadows: fs.clone(), project_root: Some(dir.clone()) };
         let result = skill.execute(&serde_json::json!({"name": "神秘信封"})).unwrap();
         assert_eq!(result["status"], "success");
 
-        let content = std::fs::read_to_string(dir.join("Content").join("伏笔.md")).unwrap();
+        let content = std::fs::read_to_string(dir.join("data").join("foreshadows.md")).unwrap();
         assert!(content.contains("✅ 已解决"));
         assert!(!content.contains("⏳ 未解决"));
 
@@ -1568,15 +1568,15 @@ mod tests {
     #[test]
     fn test_write_file_content_overwrite() {
         let dir = std::env::temp_dir().join("qingmo_test_write_file");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
-        std::fs::write(dir.join("Content").join("ch1.md"), "old content").unwrap();
+        std::fs::create_dir_all(dir.join("chapters")).unwrap();
+        std::fs::write(dir.join("chapters").join("ch1.md"), "old content").unwrap();
 
         let skill = WriteFileContentSkill(Some(dir.clone()));
         let result = skill.execute(&serde_json::json!({
-            "path": "Content/ch1.md", "content": "new content", "mode": "overwrite"
+            "path": "chapters/ch1.md", "content": "new content", "mode": "overwrite"
         })).unwrap();
         assert_eq!(result["status"], "success");
-        let content = std::fs::read_to_string(dir.join("Content").join("ch1.md")).unwrap();
+        let content = std::fs::read_to_string(dir.join("chapters").join("ch1.md")).unwrap();
         assert_eq!(content, "new content");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1585,15 +1585,15 @@ mod tests {
     #[test]
     fn test_write_file_content_append() {
         let dir = std::env::temp_dir().join("qingmo_test_append_file");
-        std::fs::create_dir_all(dir.join("Content")).unwrap();
-        std::fs::write(dir.join("Content").join("ch2.md"), "line1\n").unwrap();
+        std::fs::create_dir_all(dir.join("chapters")).unwrap();
+        std::fs::write(dir.join("chapters").join("ch2.md"), "line1\n").unwrap();
 
         let skill = WriteFileContentSkill(Some(dir.clone()));
         let result = skill.execute(&serde_json::json!({
-            "path": "Content/ch2.md", "content": "line2\n"
+            "path": "chapters/ch2.md", "content": "line2\n"
         })).unwrap();
         assert_eq!(result["status"], "success");
-        let content = std::fs::read_to_string(dir.join("Content").join("ch2.md")).unwrap();
+        let content = std::fs::read_to_string(dir.join("chapters").join("ch2.md")).unwrap();
         assert!(content.contains("line1"));
         assert!(content.contains("line2"));
 
@@ -1606,7 +1606,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let skill = WriteFileContentSkill(Some(dir.clone()));
         let result = skill.execute(&serde_json::json!({
-            "path": "Design/data.json", "content": "{}"
+            "path": "data/data.json", "content": "{}"
         }));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("仅支持写入"));

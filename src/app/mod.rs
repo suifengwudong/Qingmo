@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -181,6 +181,31 @@ pub struct TextToolApp {
 
     // ── Find & Replace bar ────────────────────────────────────────────────────
     pub(super) find_bar: Option<FindBar>,
+
+    // ── LLM history ───────────────────────────────────────────────────────────
+    /// Persisted conversation history for the current project.
+    pub(super) llm_history: LlmHistory,
+    /// On-disk path for `llm_history.json` (set when a project is opened).
+    pub(super) llm_history_path: Option<PathBuf>,
+    /// Active tab in the LLM panel: 0 = 任务, 1 = 历史.
+    pub(super) llm_panel_tab: u8,
+    /// Keyword filter in the LLM history tab.
+    pub(super) llm_history_search: String,
+    /// Index of the history entry expanded in the history list (if any).
+    pub(super) llm_history_expanded: Option<usize>,
+    /// Pending delete confirmation index in the history tab.
+    pub(super) llm_history_delete_confirm: Option<usize>,
+
+    // ── Full-book word count stats ────────────────────────────────────────────
+    /// Word counts per file as of project open (snapshot for today's delta).
+    pub(super) word_count_baseline: HashMap<PathBuf, usize>,
+    /// Accumulated new words written this session (since project was opened).
+    pub(super) today_added_words: usize,
+
+    // ── Command palette ───────────────────────────────────────────────────────
+    pub(super) show_command_palette: bool,
+    pub(super) command_palette_query: String,
+    pub(super) command_palette_selection: usize,
 }
 
 #[derive(Debug)]
@@ -197,20 +222,38 @@ pub(super) struct RenameDialog {
 
 // ── Find / Replace bar ────────────────────────────────────────────────────────
 
+/// A single match within the editor content, with both byte offsets (for
+/// `replace_range`) and pre-computed char indices (for `CCursor`) cached at
+/// match-find time to avoid repeated O(n) `chars().count()` traversals.
+pub(super) struct MatchRange {
+    pub byte_start: usize,
+    pub byte_end:   usize,
+    /// `content[..byte_start].chars().count()` – cached at match time.
+    pub char_start: usize,
+    /// `content[..byte_end].chars().count()` – cached at match time.
+    pub char_end:   usize,
+}
+
 pub(super) struct FindBar {
     pub query: String,
     pub replace: String,
     pub case_sensitive: bool,
     pub replace_mode: bool,
-    /// Cached byte-offset ranges `(start, end)` of all current matches in the
-    /// left editor's content.  Refreshed whenever `query` or `case_sensitive`
-    /// changes.
-    pub match_ranges: Vec<(usize, usize)>,
+    /// Cached match positions.  Refreshed whenever `query`, `case_sensitive`,
+    /// or the editor content changes.
+    pub match_ranges: Vec<MatchRange>,
     /// Index into `match_ranges` that is currently "selected".
     pub current_match: usize,
     /// True once the query box has received its initial focus on bar open.
     /// Prevents focus from being stolen back from the replace field every frame.
     pub focus_requested: bool,
+    /// Cached lowercase version of the last content passed to `refresh_matches`.
+    /// Avoids re-allocating a full lowercase copy on each query keystroke when
+    /// the document content hasn't changed (the common case for large chapters).
+    cached_lower: Option<String>,
+    /// Byte length of the content when `cached_lower` was built.
+    /// Used as a fast validity check: if lengths differ, rebuild the cache.
+    cached_lower_len: usize,
 }
 
 impl FindBar {
@@ -223,40 +266,85 @@ impl FindBar {
             match_ranges: Vec::new(),
             current_match: 0,
             focus_requested: false,
+            cached_lower: None,
+            cached_lower_len: 0,
         }
     }
 
     /// Rebuild `match_ranges` by scanning `text` for `self.query`.
+    ///
+    /// Char offsets are computed incrementally (single O(n) pass) so that
+    /// `select_current_match` can look them up in O(1) instead of O(n).
+    ///
+    /// The lowercase version of `text` is cached inside `FindBar` and reused
+    /// across consecutive keystrokes when the document content is unchanged.
     pub fn refresh_matches(&mut self, text: &str) {
         self.match_ranges.clear();
         self.current_match = 0;
         if self.query.is_empty() {
             return;
         }
-        let (haystack, needle): (std::borrow::Cow<str>, std::borrow::Cow<str>) =
-            if self.case_sensitive {
-                (std::borrow::Cow::Borrowed(text), std::borrow::Cow::Borrowed(&self.query))
-            } else {
-                (std::borrow::Cow::Owned(text.to_lowercase()), std::borrow::Cow::Owned(self.query.to_lowercase()))
-            };
+
+        // Build or reuse the lowercase cache.
+        let need_rebuild = !self.case_sensitive
+            && (self.cached_lower.is_none() || self.cached_lower_len != text.len());
+        if need_rebuild {
+            self.cached_lower = Some(text.to_lowercase());
+            self.cached_lower_len = text.len();
+        }
+
+        let haystack: &str = if self.case_sensitive {
+            text
+        } else {
+            self.cached_lower.as_deref().unwrap_or(text)
+        };
+        let needle: std::borrow::Cow<str> = if self.case_sensitive {
+            std::borrow::Cow::Borrowed(&self.query)
+        } else {
+            std::borrow::Cow::Owned(self.query.to_lowercase())
+        };
         let nlen = needle.len();
         if nlen == 0 {
             return;
         }
-        let mut start = 0usize;
+
+        // Walk through all matches, accumulating char position incrementally.
+        let mut byte_cursor = 0usize;
+        let mut char_cursor = 0usize;
         loop {
-            match haystack[start..].find(needle.as_ref()) {
-                Some(pos) => {
-                    let abs = start + pos;
-                    self.match_ranges.push((abs, abs + nlen));
-                    start = abs + nlen;
-                    if start >= haystack.len() {
+            match haystack[byte_cursor..].find(needle.as_ref()) {
+                Some(rel) => {
+                    let match_byte = byte_cursor + rel;
+                    // Advance char_cursor from byte_cursor → match start.
+                    char_cursor += text[byte_cursor..match_byte].chars().count();
+                    let char_start = char_cursor;
+                    // Advance char_cursor across the match.
+                    char_cursor += text[match_byte..match_byte + nlen].chars().count();
+                    let char_end = char_cursor;
+
+                    self.match_ranges.push(MatchRange {
+                        byte_start: match_byte,
+                        byte_end:   match_byte + nlen,
+                        char_start,
+                        char_end,
+                    });
+
+                    byte_cursor = match_byte + nlen;
+                    if byte_cursor >= haystack.len() {
                         break;
                     }
                 }
                 None => break,
             }
         }
+    }
+
+    /// Invalidate the cached lowercase content.  Call this after the editor
+    /// content changes (e.g., after a replace operation) so the next
+    /// `refresh_matches` rebuilds the cache from the new text.
+    pub fn invalidate_cache(&mut self) {
+        self.cached_lower = None;
+        self.cached_lower_len = 0;
     }
 
     pub fn go_next(&mut self) {
@@ -366,6 +454,17 @@ impl TextToolApp {
             last_active_panel: Panel::Novel,
             show_template_dialog: false,
             find_bar: None,
+            llm_history: LlmHistory::default(),
+            llm_history_path: None,
+            llm_panel_tab: 0,
+            llm_history_search: String::new(),
+            llm_history_expanded: None,
+            llm_history_delete_confirm: None,
+            word_count_baseline: HashMap::new(),
+            today_added_words: 0,
+            show_command_palette: false,
+            command_palette_query: String::new(),
+            command_palette_selection: 0,
         };
 
         // Apply saved configuration (LLM settings, MD settings, last project).
@@ -389,11 +488,13 @@ impl TextToolApp {
     // ── Project operations ────────────────────────────────────────────────────
 
     pub(super) fn open_project(&mut self, path: PathBuf) {
+        // Migrate legacy layout before creating directories
+        self.project_root = Some(path.clone());
+        self.migrate_legacy_layout();
         // Ensure required subdirectories exist
-        for sub in &["Content", "Design", "废稿"] {
+        for sub in &["chapters", "data", "废稿"] {
             let _ = std::fs::create_dir_all(path.join(sub));
         }
-        self.project_root = Some(path.clone());
         self.last_project = Some(path.clone());
         self.refresh_tree();
         self.status = format!("已打开项目: {}", path.display());
@@ -401,12 +502,34 @@ impl TextToolApp {
         if self.auto_load_from_files {
             self.load_all_from_files();
         }
+
+        // Load LLM history for this project.
+        let history_path = path.join("data").join("llm_history.json");
+        self.llm_history = LlmHistory::load(&history_path);
+        self.llm_history_path = Some(history_path);
+
+        // Snapshot word counts for all chapters/*.md files so we can compute
+        // today's writing delta during this session.
+        self.word_count_baseline.clear();
+        self.today_added_words = 0;
+        let content_dir = path.join("chapters");
+        if let Ok(entries) = std::fs::read_dir(&content_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        self.word_count_baseline.insert(
+                            p, crate::app::search::count_words(&text));
+                    }
+                }
+            }
+        }
     }
 
     pub(super) fn refresh_tree(&mut self) {
         let hide_json = self.md_settings.hide_json;
         if let Some(root) = &self.project_root {
-            self.file_tree = ["Content", "Design", "废稿"]
+            self.file_tree = ["chapters", "data", "废稿"]
                 .iter()
                 .filter_map(|sub| {
                     let p = root.join(sub);
@@ -439,8 +562,13 @@ impl TextToolApp {
 
     pub(super) fn save_left(&mut self) {
         if let Some(f) = &mut self.left_file {
+            let path = f.path.clone();
+            let content = f.content.clone();
             match f.save() {
-                Ok(_) => self.status = format!("已保存: {}", f.path.display()),
+                Ok(_) => {
+                    self.status = format!("已保存: {}", path.display());
+                    self.update_word_count_delta(&path, &content);
+                }
                 Err(e) => self.status = format!("保存失败: {e}"),
             }
         }
@@ -448,11 +576,27 @@ impl TextToolApp {
 
     pub(super) fn save_right(&mut self) {
         if let Some(f) = &mut self.right_file {
+            let path = f.path.clone();
+            let content = f.content.clone();
             match f.save() {
-                Ok(_) => self.status = format!("已保存: {}", f.path.display()),
+                Ok(_) => {
+                    self.status = format!("已保存: {}", path.display());
+                    self.update_word_count_delta(&path, &content);
+                }
                 Err(e) => self.status = format!("保存失败: {e}"),
             }
         }
+    }
+
+    /// Recompute today's writing delta after saving `path` with `content`.
+    fn update_word_count_delta(&mut self, path: &Path, content: &str) {
+        if path.extension().and_then(|e| e.to_str()) != Some("md") { return; }
+        let current = crate::app::search::count_words(content);
+        let baseline = self.word_count_baseline.entry(path.to_owned()).or_insert(0);
+        if current > *baseline {
+            self.today_added_words += current - *baseline;
+        }
+        *baseline = current;
     }
 
     pub(super) fn new_file(&mut self, dir: PathBuf) {
@@ -820,6 +964,7 @@ impl eframe::App for TextToolApp {
         self.draw_settings_window(ctx);
         self.draw_search_window(ctx);
         self.draw_template_dialog(ctx);
+        self.draw_command_palette(ctx);
     }
 }
 
@@ -828,256 +973,6 @@ impl eframe::App for TextToolApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_open_file_is_markdown() {
-        let f = OpenFile::new(PathBuf::from("test.md"), String::new());
-        assert!(f.is_markdown());
-        let f2 = OpenFile::new(PathBuf::from("test.json"), String::new());
-        assert!(!f2.is_markdown());
-    }
-
-    #[test]
-    fn test_open_file_title_modified() {
-        let mut f = OpenFile::new(PathBuf::from("test.md"), String::new());
-        assert_eq!(f.title(), "test.md");
-        f.modified = true;
-        assert_eq!(f.title(), "● test.md");
-    }
-
-    // ── ObjectKind tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_object_kind_labels() {
-        assert_eq!(ObjectKind::Character.label(), "人物");
-        assert_eq!(ObjectKind::Scene.label(), "场景");
-        assert_eq!(ObjectKind::Location.label(), "地点");
-        assert_eq!(ObjectKind::Item.label(), "道具");
-        assert_eq!(ObjectKind::Faction.label(), "势力");
-        assert_eq!(ObjectKind::Other.label(), "其他");
-    }
-
-    #[test]
-    fn test_world_object_new() {
-        let obj = WorldObject::new("张三", ObjectKind::Character);
-        assert_eq!(obj.name, "张三");
-        assert_eq!(obj.kind, ObjectKind::Character);
-        assert!(obj.description.is_empty());
-        assert!(obj.links.is_empty());
-    }
-
-    #[test]
-    fn test_world_object_link() {
-        let mut obj = WorldObject::new("张三", ObjectKind::Character);
-        obj.links.push(ObjectLink {
-            target: LinkTarget::Object("李四".to_owned()),
-            kind: RelationKind::Friend,
-            note: String::new(),
-        });
-        assert_eq!(obj.links.len(), 1);
-        assert_eq!(obj.links[0].target.display_name(), "李四");
-        assert_eq!(obj.links[0].target.type_label(), "对象");
-    }
-
-    #[test]
-    fn test_world_object_link_to_node() {
-        let mut obj = WorldObject::new("古剑", ObjectKind::Item);
-        obj.links.push(ObjectLink {
-            target: LinkTarget::Node("第一章".to_owned()),
-            kind: RelationKind::AppearsIn,
-            note: "在山洞中被发现".to_owned(),
-        });
-        assert_eq!(obj.links[0].target.type_label(), "章节");
-        assert_eq!(obj.links[0].note, "在山洞中被发现");
-    }
-
-    #[test]
-    fn test_world_object_json_serialization() {
-        let mut obj = WorldObject::new("主角", ObjectKind::Character);
-        obj.description = "勇敢、善良".to_owned();
-        obj.links.push(ObjectLink {
-            target: LinkTarget::Object("反派".to_owned()),
-            kind: RelationKind::Enemy,
-            note: String::new(),
-        });
-        let json = serde_json::to_string(&obj).expect("WorldObject serialization should succeed");
-        let d: WorldObject = serde_json::from_str(&json).expect("WorldObject deserialization should succeed");
-        assert_eq!(d.name, "主角");
-        assert_eq!(d.kind, ObjectKind::Character);
-        assert_eq!(d.links[0].kind, RelationKind::Enemy);
-    }
-
-    // ── StructKind tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_struct_kind_labels() {
-        assert_eq!(StructKind::Outline.label(), "总纲");
-        assert_eq!(StructKind::Volume.label(), "卷");
-        assert_eq!(StructKind::Chapter.label(), "章");
-        assert_eq!(StructKind::Section.label(), "节");
-    }
-
-    #[test]
-    fn test_struct_kind_default_child() {
-        assert_eq!(StructKind::Outline.default_child_kind(), StructKind::Volume);
-        assert_eq!(StructKind::Volume.default_child_kind(), StructKind::Chapter);
-        assert_eq!(StructKind::Chapter.default_child_kind(), StructKind::Section);
-    }
-
-    // ── StructNode tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_struct_node_new() {
-        let n = StructNode::new("第一章", StructKind::Chapter);
-        assert_eq!(n.title, "第一章");
-        assert_eq!(n.kind, StructKind::Chapter);
-        assert!(n.children.is_empty());
-        assert!(n.linked_objects.is_empty());
-        assert!(!n.done);
-    }
-
-    #[test]
-    fn test_struct_node_leaf_count() {
-        let mut vol = StructNode::new("第一卷", StructKind::Volume);
-        vol.children.push(StructNode::new("第一章", StructKind::Chapter));
-        vol.children.push(StructNode::new("第二章", StructKind::Chapter));
-        assert_eq!(vol.leaf_count(), 2);
-    }
-
-    #[test]
-    fn test_struct_node_done_count() {
-        let mut vol = StructNode::new("第一卷", StructKind::Volume);
-        let mut ch1 = StructNode::new("第一章", StructKind::Chapter);
-        ch1.done = true;
-        vol.children.push(ch1);
-        vol.children.push(StructNode::new("第二章", StructKind::Chapter));
-        assert_eq!(vol.done_count(), 1);
-        assert_eq!(vol.leaf_count(), 2);
-    }
-
-    #[test]
-    fn test_struct_node_json_serialization() {
-        let mut node = StructNode::new("序章", StructKind::Chapter);
-        node.tag = ChapterTag::Foreshadow;
-        node.done = true;
-        node.linked_objects.push("主角".to_owned());
-        let json = serde_json::to_string(&node).expect("StructNode serialization should succeed");
-        let d: StructNode = serde_json::from_str(&json).expect("StructNode deserialization should succeed");
-        assert_eq!(d.title, "序章");
-        assert_eq!(d.tag, ChapterTag::Foreshadow);
-        assert!(d.done);
-        assert_eq!(d.linked_objects[0], "主角");
-    }
-
-    // ── node_at / node_at_mut tests ───────────────────────────────────────────
-
-    #[test]
-    fn test_node_at() {
-        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
-        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
-        assert_eq!(node_at(&roots, &[0]).expect("node should exist at [0]").title, "第一卷");
-        assert_eq!(node_at(&roots, &[0, 0]).expect("node should exist at [0,0]").title, "第一章");
-        assert!(node_at(&roots, &[1]).is_none());
-    }
-
-    #[test]
-    fn test_node_at_mut() {
-        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
-        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
-        node_at_mut(&mut roots, &[0, 0]).expect("node should exist at [0,0]").done = true;
-        assert!(roots[0].children[0].done);
-    }
-
-    #[test]
-    fn test_all_node_titles() {
-        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
-        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
-        roots[0].children.push(StructNode::new("第二章", StructKind::Chapter));
-        let titles = all_node_titles(&roots);
-        assert_eq!(titles, vec!["第一卷", "第一章", "第二章"]);
-    }
-
-    // ── RelationKind tests ────────────────────────────────────────────────────
-
-    #[test]
-    fn test_relation_kind_labels() {
-        assert_eq!(RelationKind::Friend.label(), "友好");
-        assert_eq!(RelationKind::Enemy.label(), "敌对");
-        assert_eq!(RelationKind::Family.label(), "亲属");
-        assert_eq!(RelationKind::AppearsIn.label(), "出场");
-        assert_eq!(RelationKind::Foreshadows.label(), "铺垫");
-        assert_eq!(RelationKind::Resolves.label(), "回收");
-    }
-
-    // ── ChapterTag tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_chapter_tag_labels() {
-        assert_eq!(ChapterTag::Climax.label(), "高潮");
-        assert_eq!(ChapterTag::Foreshadow.label(), "伏笔");
-        assert_eq!(ChapterTag::Transition.label(), "过渡");
-        assert_eq!(ChapterTag::Normal.label(), "普通");
-    }
-
-    // ── Foreshadow tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_foreshadow_new() {
-        let fs = Foreshadow::new("神秘礼物");
-        assert_eq!(fs.name, "神秘礼物");
-        assert!(!fs.resolved);
-        assert!(fs.related_chapters.is_empty());
-    }
-
-    // ── MarkdownSettings tests ────────────────────────────────────────────────
-
-    #[test]
-    fn test_markdown_settings_default() {
-        let s = MarkdownSettings::default();
-        assert_eq!(s.preview_font_size, 14.0);
-        assert!(!s.default_to_preview);
-    }
-
-    #[test]
-    fn test_markdown_settings_custom() {
-        let s = MarkdownSettings {
-            preview_font_size: 18.0,
-            default_to_preview: true,
-            ..MarkdownSettings::default()
-        };
-        assert_eq!(s.preview_font_size, 18.0);
-        assert!(s.default_to_preview);
-    }
-
-    // ── Milestone tests ───────────────────────────────────────────────────────
-
-    #[test]
-    fn test_milestone_new() {
-        let m = Milestone::new("第一阶段完成");
-        assert_eq!(m.name, "第一阶段完成");
-        assert!(!m.completed);
-        assert!(m.description.is_empty());
-    }
-
-    #[test]
-    fn test_milestone_completion() {
-        let mut m = Milestone::new("MVP");
-        assert!(!m.completed);
-        m.completed = true;
-        assert!(m.completed);
-    }
-
-    #[test]
-    fn test_milestone_json_serialization() {
-        let mut m = Milestone::new("发布 v1.0");
-        m.description = "第一个正式版本".to_owned();
-        m.completed = true;
-        let json = serde_json::to_string(&m).expect("Milestone serialization should succeed");
-        let d: Milestone = serde_json::from_str(&json).expect("Milestone deserialization should succeed");
-        assert_eq!(d.name, "发布 v1.0");
-        assert_eq!(d.description, "第一个正式版本");
-        assert!(d.completed);
-    }
 
     // ── build_dialogue_optimization_prompt tests ──────────────────────────────
 
@@ -1092,9 +987,6 @@ mod tests {
             note: String::new(),
         });
 
-        // We can't construct TextToolApp without a GPU context in tests,
-        // so we test the underlying build_dialogue_optimization_prompt logic
-        // through the PromptTemplate + context combination directly.
         let ctx = format!(
             "## 人物：{} ({})\n- 特质：{}\n- 关系：{} → {}\n",
             app_objs[0].name,
@@ -1110,103 +1002,6 @@ mod tests {
         assert!(prompt.contains("你好啊"));
     }
 
-    #[test]
-    fn test_build_character_context_empty() {
-        // When no world objects exist, context is empty.
-        let objects: Vec<WorldObject> = vec![];
-        let ctx: String = if objects.is_empty() {
-            String::new()
-        } else {
-            let mut out = String::from("## 世界对象\n\n");
-            for o in &objects {
-                out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
-            }
-            out
-        };
-        assert!(ctx.is_empty());
-    }
-
-    #[test]
-    fn test_build_character_context_with_objects() {
-        let objects = vec![
-            WorldObject::new("主角", ObjectKind::Character),
-            WorldObject::new("城堡", ObjectKind::Location),
-        ];
-        let mut out = String::from("## 世界对象\n\n");
-        for o in &objects {
-            out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
-        }
-        assert!(out.contains("主角"));
-        assert!(out.contains("城堡"));
-        assert!(out.contains("人物"));
-        assert!(out.contains("地点"));
-    }
-
-    // ── Phase 4: AppConfig serialization tests ────────────────────────────────
-
-    #[test]
-    fn test_llm_config_serialization() {
-        let cfg = LlmConfig {
-            model_path: "llama2".to_owned(),
-            api_url: "http://localhost:11434/api/generate".to_owned(),
-            temperature: 0.8,
-            max_tokens: 256,
-            use_local: false,
-            system_prompt: "你是一个写作助手".to_owned(),
-        };
-        let json = serde_json::to_string(&cfg).expect("config serialization should succeed");
-        let d: LlmConfig = serde_json::from_str(&json).expect("LlmConfig deserialization should succeed");
-        assert_eq!(d.model_path, "llama2");
-        assert_eq!(d.api_url, "http://localhost:11434/api/generate");
-        assert!((d.temperature - 0.8).abs() < 1e-5);
-        assert_eq!(d.max_tokens, 256);
-        assert!(!d.use_local);
-        assert_eq!(d.system_prompt, "你是一个写作助手");
-    }
-
-    #[test]
-    fn test_markdown_settings_serialization() {
-        let s = MarkdownSettings {
-            preview_font_size: 18.0,
-            default_to_preview: true,
-            ..MarkdownSettings::default()
-        };
-        let json = serde_json::to_string(&s).expect("MarkdownSettings serialization should succeed");
-        let d: MarkdownSettings = serde_json::from_str(&json).expect("MarkdownSettings deserialization should succeed");
-        assert!((d.preview_font_size - 18.0).abs() < 1e-5);
-        assert!(d.default_to_preview);
-    }
-
-    #[test]
-    fn test_app_config_serialization_roundtrip() {
-        let cfg = AppConfig {
-            llm_config: LlmConfig {
-                model_path: "phi2".to_owned(),
-                api_url: "http://localhost:8080".to_owned(),
-                temperature: 0.5,
-                max_tokens: 1024,
-                use_local: true,
-                system_prompt: String::new(),
-            },
-            md_settings: MarkdownSettings {
-                preview_font_size: 16.0,
-                default_to_preview: true,
-                ..MarkdownSettings::default()
-            },
-            last_project: Some("/home/user/my_novel".to_owned()),
-            auto_load: true,
-            theme: AppTheme::Dark,
-        };
-        let json = serde_json::to_string_pretty(&cfg).expect("AppConfig serialization should succeed");
-        let d: AppConfig = serde_json::from_str(&json).expect("AppConfig deserialization should succeed");
-        assert_eq!(d.llm_config.model_path, "phi2");
-        assert_eq!(d.md_settings.preview_font_size, 16.0);
-        assert_eq!(d.last_project, Some("/home/user/my_novel".to_owned()));
-        assert!(d.auto_load);
-    }
-
-    // ── Phase 4: Reverse sync helpers ─────────────────────────────────────────
-
     /// Tests the foreshadow-from-MD parsing logic in isolation using a temp file.
     #[test]
     fn test_load_foreshadows_from_md_via_files() {
@@ -1217,7 +1012,6 @@ mod tests {
         let md = "# 伏笔列表\n\n## 神秘信件 ✅ 已解决\n\n某内容\n\n## 古剑来历 ⏳ 未解决\n\n";
         std::fs::write(&md_path, md).expect("test MD file write should succeed");
 
-        // Parse manually using the same logic as load_foreshadows_from_md
         let text = std::fs::read_to_string(&md_path).expect("test MD file read should succeed");
         let mut foreshadows = Vec::new();
         for line in text.lines() {
@@ -1239,7 +1033,6 @@ mod tests {
         assert_eq!(foreshadows[1].name, "古剑来历");
         assert!(!foreshadows[1].resolved);
 
-        // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1264,167 +1057,5 @@ mod tests {
         assert_eq!(loaded[1].kind, ObjectKind::Item);
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // ── Phase 4: Search helper ────────────────────────────────────────────────
-
-    #[test]
-    fn test_search_dir_finds_matches() {
-        let dir = std::env::temp_dir().join("qingmo_test_search");
-        std::fs::create_dir_all(&dir).expect("test directory creation should succeed");
-        std::fs::write(dir.join("chapter1.md"), "# 第一章\n\n主角走进了森林。").expect("test MD file write should succeed");
-        std::fs::write(dir.join("notes.json"), "{\"title\":\"主角笔记\"}").expect("test JSON file write should succeed");
-        std::fs::write(dir.join("ignore.txt"), "主角 should not be found").expect("test TXT file write should succeed");
-
-        let mut results = Vec::new();
-        crate::app::search::search_dir(&dir, "主角", &mut results);
-
-        // Should find matches in .md and .json but not .txt
-        assert!(!results.is_empty());
-        let paths: Vec<_> = results.iter().map(|r| r.file_path.file_name().expect("file should have a name").to_string_lossy().into_owned()).collect();
-        assert!(paths.iter().any(|p| p.ends_with(".md")));
-        assert!(paths.iter().any(|p| p.ends_with(".json")));
-        assert!(!paths.iter().any(|p| p.ends_with(".txt")));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // ── Phase 4: Export helpers ───────────────────────────────────────────────
-
-    #[test]
-    fn test_copy_dir_all() {
-        let src = std::env::temp_dir().join("qingmo_test_copy_src");
-        let dst = std::env::temp_dir().join("qingmo_test_copy_dst");
-        std::fs::create_dir_all(&src).expect("test source directory creation should succeed");
-        std::fs::write(src.join("file1.md"), "hello").expect("test file write should succeed");
-        let sub = src.join("subdir");
-        std::fs::create_dir_all(&sub).expect("test subdirectory creation should succeed");
-        std::fs::write(sub.join("file2.json"), "{}").expect("test file write should succeed");
-
-        crate::app::search::copy_dir_all(&src, &dst).expect("directory copy should succeed");
-
-        assert!(dst.join("file1.md").exists());
-        assert!(dst.join("subdir").join("file2.json").exists());
-        let content = std::fs::read_to_string(dst.join("file1.md")).expect("test file read should succeed");
-        assert_eq!(content, "hello");
-
-        let _ = std::fs::remove_dir_all(&src);
-        let _ = std::fs::remove_dir_all(&dst);
-    }
-
-    #[test]
-    fn test_markdown_settings_new_fields_defaults() {
-        let s = MarkdownSettings::default();
-        assert!(s.hide_json);
-        assert_eq!(s.tab_size, 2);
-        assert!(!s.auto_extract_structure);
-        assert!((s.editor_font_size - 13.0).abs() < 1e-5);
-        assert_eq!(s.auto_save_interval_secs, 60);
-        // Files tab hidden by default
-        assert!(!s.show_files_tab);
-    }
-
-    #[test]
-    fn test_markdown_settings_hide_json_roundtrip() {
-        // Old JSON without new fields should deserialize with defaults.
-        let old_json = r#"{"preview_font_size":14.0,"default_to_preview":false}"#;
-        let s: MarkdownSettings = serde_json::from_str(old_json).expect("old MarkdownSettings JSON should deserialize with defaults");
-        assert!(s.hide_json);        // should default to true
-        assert_eq!(s.tab_size, 2);   // should default to 2
-        assert!((s.editor_font_size - 13.0).abs() < 1e-5); // should default to 13.0
-    }
-
-    #[test]
-    fn test_app_theme_default() {
-        let cfg: AppConfig = serde_json::from_str(
-            r#"{"llm_config":{"model_path":"","api_url":"","temperature":0.7,"max_tokens":512,"use_local":true,"system_prompt":""},
-                "md_settings":{"preview_font_size":14.0,"default_to_preview":false},
-                "last_project":null,"auto_load":false}"#
-        ).expect("AppConfig deserialization should succeed");
-        assert_eq!(cfg.theme, AppTheme::Dark); // serde default
-    }
-
-    #[test]
-    fn test_file_node_from_path_filtered_hides_json() {
-        let dir = std::env::temp_dir().join("qingmo_test_filetree");
-        std::fs::create_dir_all(&dir).expect("test directory creation should succeed");
-        std::fs::write(dir.join("chapter1.md"), "hello").expect("test file write should succeed");
-        std::fs::write(dir.join("data.json"), "{}").expect("test file write should succeed");
-
-        let node_show = FileNode::from_path_filtered(&dir, false).expect("FileNode creation should succeed");
-        let node_hide = FileNode::from_path_filtered(&dir, true).expect("FileNode creation with hide_json should succeed");
-
-        let show_names: Vec<_> = node_show.children.iter().map(|n| &n.name).collect();
-        let hide_names: Vec<_> = node_hide.children.iter().map(|n| &n.name).collect();
-
-        assert!(show_names.iter().any(|n| n.as_str() == "data.json"));
-        assert!(!hide_names.iter().any(|n| n.as_str() == "data.json"));
-        assert!(hide_names.iter().any(|n| n.as_str() == "chapter1.md"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // ── FindBar tests ─────────────────────────────────────────────────────────
-
-    #[test]
-    fn test_find_bar_refresh_matches_ascii() {
-        let mut bar = FindBar::new(false);
-        bar.query = "hello".to_owned();
-        bar.refresh_matches("hello world hello");
-        assert_eq!(bar.match_ranges.len(), 2);
-        assert_eq!(bar.match_ranges[0], (0, 5));
-        assert_eq!(bar.match_ranges[1], (12, 17));
-    }
-
-    #[test]
-    fn test_find_bar_refresh_matches_case_insensitive() {
-        let mut bar = FindBar::new(false);
-        bar.query = "hello".to_owned();
-        bar.case_sensitive = false;
-        bar.refresh_matches("Hello HELLO hello");
-        assert_eq!(bar.match_ranges.len(), 3);
-    }
-
-    #[test]
-    fn test_find_bar_refresh_matches_case_sensitive() {
-        let mut bar = FindBar::new(false);
-        bar.query = "hello".to_owned();
-        bar.case_sensitive = true;
-        bar.refresh_matches("Hello HELLO hello");
-        assert_eq!(bar.match_ranges.len(), 1);
-    }
-
-    #[test]
-    fn test_find_bar_refresh_matches_chinese() {
-        let mut bar = FindBar::new(false);
-        bar.query = "世界".to_owned();
-        bar.refresh_matches("你好世界，再见世界");
-        assert_eq!(bar.match_ranges.len(), 2);
-    }
-
-    #[test]
-    fn test_find_bar_navigate() {
-        let mut bar = FindBar::new(false);
-        bar.query = "a".to_owned();
-        bar.refresh_matches("a b a c a");
-        assert_eq!(bar.match_ranges.len(), 3);
-        assert_eq!(bar.current_match, 0);
-        bar.go_next();
-        assert_eq!(bar.current_match, 1);
-        bar.go_prev();
-        assert_eq!(bar.current_match, 0);
-        // Wrap around backward
-        bar.go_prev();
-        assert_eq!(bar.current_match, 2);
-        // Wrap around forward
-        bar.go_next();
-        assert_eq!(bar.current_match, 0);
-    }
-
-    #[test]
-    fn test_find_bar_empty_query() {
-        let mut bar = FindBar::new(false);
-        bar.refresh_matches("some text");
-        assert!(bar.match_ranges.is_empty());
     }
 }

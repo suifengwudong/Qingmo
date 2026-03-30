@@ -318,7 +318,8 @@ impl TextToolApp {
                 ctrl && !shift && i.key_pressed(Key::P),           // Ctrl+P preview toggle
                 ctrl && !shift && i.key_pressed(Key::F),           // Ctrl+F find
                 ctrl && !shift && i.key_pressed(Key::H),           // Ctrl+H find+replace
-                i.key_pressed(Key::Escape),                        // Esc (close find bar)
+                i.key_pressed(Key::Escape),                        // Esc (close find bar / palette)
+                ctrl && shift && i.key_pressed(Key::P),            // Ctrl+Shift+P command palette
             )
         });
         if input.0 {
@@ -436,9 +437,23 @@ impl TextToolApp {
                 None => self.find_bar = Some(crate::app::FindBar::new(true)),
             }
         }
-        // Esc: close find bar if open
-        if input.15 && self.find_bar.is_some() {
-            self.find_bar = None;
+        // Esc: close find bar or command palette if open
+        if input.15 {
+            if self.find_bar.is_some() {
+                self.find_bar = None;
+            } else if self.show_command_palette {
+                self.show_command_palette = false;
+                self.command_palette_query.clear();
+                self.command_palette_selection = 0;
+            }
+        }
+        // Ctrl+Shift+P: toggle command palette
+        if input.16 {
+            self.show_command_palette = !self.show_command_palette;
+            if self.show_command_palette {
+                self.command_palette_query.clear();
+                self.command_palette_selection = 0;
+            }
         }
     }
 
@@ -679,18 +694,14 @@ impl TextToolApp {
     /// Move the TextEdit cursor/selection to the current find-bar match.
     pub(super) fn select_current_match(&self, ctx: &Context) {
         let Some(bar) = &self.find_bar else { return };
-        let Some(&(start_byte, end_byte)) = bar.match_ranges.get(bar.current_match) else { return };
-        let Some(content) = self.left_file.as_ref().map(|f| &f.content) else { return };
+        let Some(m) = bar.match_ranges.get(bar.current_match) else { return };
 
-        // Convert byte offsets to char indices (required by egui's CCursor).
-        let start_char = content[..start_byte].chars().count();
-        let end_char   = content[..end_byte].chars().count();
-
+        // Char offsets are pre-computed in MatchRange — O(1) lookup.
         let te_id = egui::Id::new("left_editor_main");
         if let Some(mut state) = egui::text_edit::TextEditState::load(ctx, te_id) {
             let range = egui::text::CCursorRange::two(
-                egui::text::CCursor::new(start_char),
-                egui::text::CCursor::new(end_char),
+                egui::text::CCursor::new(m.char_start),
+                egui::text::CCursor::new(m.char_end),
             );
             state.cursor.set_char_range(Some(range));
             egui::text_edit::TextEditState::store(state, ctx, te_id);
@@ -700,7 +711,9 @@ impl TextToolApp {
     /// Replace the match at `current_match` with `bar.replace` and advance.
     pub(super) fn replace_current_match(&mut self, ctx: &Context) {
         let Some(bar) = &self.find_bar else { return };
-        let Some(&(start_byte, end_byte)) = bar.match_ranges.get(bar.current_match) else { return };
+        let Some(m) = bar.match_ranges.get(bar.current_match) else { return };
+        let start_byte = m.byte_start;
+        let end_byte   = m.byte_end;
         let replace_with = bar.replace.clone();
 
         if let Some(f) = &mut self.left_file {
@@ -719,6 +732,7 @@ impl TextToolApp {
             .map(|f| f.content.clone())
             .unwrap_or_default();
         if let Some(bar) = &mut self.find_bar {
+            bar.invalidate_cache();
             bar.refresh_matches(&content);
         }
         self.select_current_match(ctx);
@@ -735,7 +749,7 @@ impl TextToolApp {
         // Collect ranges before borrowing left_file — find_bar and left_file
         // are different fields so NLL allows both to be borrowed, but we collect
         // into a local Vec here to make the ordering unambiguous.
-        let ranges: Vec<(usize, usize)> = bar.match_ranges.iter().rev().copied().collect();
+        let ranges: Vec<(usize, usize)> = bar.match_ranges.iter().rev().map(|m| (m.byte_start, m.byte_end)).collect();
 
         if let Some(f) = &mut self.left_file {
             // Save undo snapshot.
@@ -1118,12 +1132,12 @@ impl TextToolApp {
                             ui.separator();
                             ui.label(RichText::new("单层章节结构").strong());
                             ui.label(
-                                RichText::new("Content/\n  序章.md\n  第一章.md\n  第二章.md\n  …")
+                                RichText::new("chapters/\n  序章.md\n  第一章.md\n  第二章.md\n  …")
                                     .monospace().small().color(Color32::from_gray(150)),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new("适合短篇小说，所有章节\n直接在 Content/ 下")
+                                RichText::new("适合短篇小说，所有章节\n直接在 chapters/ 下")
                                     .small().color(Color32::from_gray(160)),
                             );
                         }).response.interact(egui::Sense::click());
@@ -1139,12 +1153,12 @@ impl TextToolApp {
                             ui.separator();
                             ui.label(RichText::new("卷→章二层结构").strong());
                             ui.label(
-                                RichText::new("Content/\n  第一卷/\n    第一章.md\n    第二章.md\n  第二卷/\n    …")
+                                RichText::new("chapters/\n  第一卷/\n    第一章.md\n    第二章.md\n  第二卷/\n    …")
                                     .monospace().small().color(Color32::from_gray(150)),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new("适合长篇小说，Content/ 按\n「卷」分子目录管理章节")
+                                RichText::new("适合长篇小说，chapters/ 按\n「卷」分子目录管理章节")
                                     .small().color(Color32::from_gray(160)),
                             );
                         }).response.interact(egui::Sense::click());
@@ -1175,5 +1189,352 @@ impl TextToolApp {
             });
 
         if close { self.show_template_dialog = false; }
+    }
+
+    // ── Command palette (Ctrl+Shift+P) ────────────────────────────────────────
+
+    /// Draw the floating command-palette window.
+    ///
+    /// The palette is a modal overlay with a live-filter input box.  Each
+    /// entry in `COMMANDS` is shown when its name or keywords contain the
+    /// current query.  Arrow keys navigate the selection; Enter executes the
+    /// highlighted command; Escape closes the palette.
+    pub(super) fn draw_command_palette(&mut self, ctx: &Context) {
+        if !self.show_command_palette { return; }
+
+        // Keyboard navigation: read keys before showing the window so the
+        // text field does not consume the arrow / enter / esc events first.
+        let (arrow_down, arrow_up, enter_pressed, esc_pressed) =
+            ctx.input(|i| (
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            ));
+
+        if esc_pressed {
+            self.show_command_palette = false;
+            return;
+        }
+
+        let query_lower = self.command_palette_query.to_lowercase();
+        let filtered: Vec<usize> = COMMANDS.iter().enumerate()
+            .filter(|(_, cmd)| {
+                query_lower.is_empty()
+                    || fuzzy_match(&query_lower, &cmd.name.to_lowercase())
+                    || cmd.keywords.iter().any(|k| fuzzy_match(&query_lower, k))
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if arrow_down {
+            self.command_palette_selection =
+                (self.command_palette_selection + 1).min(filtered.len().saturating_sub(1));
+        }
+        if arrow_up && self.command_palette_selection > 0 {
+            self.command_palette_selection -= 1;
+        }
+        // Clamp selection to the filtered range whenever the query changes.
+        if self.command_palette_selection >= filtered.len().max(1) {
+            self.command_palette_selection = filtered.len().saturating_sub(1);
+        }
+
+        let mut execute_idx: Option<usize> = None;
+        let mut close = false;
+
+        egui::Window::new("命令面板")
+            .anchor(egui::Align2::CENTER_TOP, [0.0, 60.0])
+            .resizable(false)
+            .collapsible(false)
+            .title_bar(false)
+            .min_width(460.0)
+            .show(ctx, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.command_palette_query)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("输入命令名称或关键词…"),
+                );
+                // Auto-focus on first frame
+                resp.request_focus();
+
+                ui.separator();
+
+                if filtered.is_empty() {
+                    ui.label(RichText::new("无匹配命令").color(Color32::from_gray(130)));
+                } else {
+                    egui::ScrollArea::vertical()
+                        .id_salt("cmd_palette_scroll")
+                        .max_height(280.0)
+                        .show(ui, |ui| {
+                            for (rank, &cmd_idx) in filtered.iter().enumerate() {
+                                let selected = rank == self.command_palette_selection;
+                                let label = COMMANDS[cmd_idx].name;
+                                let resp = ui.selectable_label(selected,
+                                    RichText::new(label));
+                                if resp.clicked() {
+                                    execute_idx = Some(cmd_idx);
+                                    close = true;
+                                }
+                            }
+                        });
+
+                    // Enter key: execute the currently selected command
+                    if enter_pressed && !filtered.is_empty() {
+                        execute_idx = Some(filtered[self.command_palette_selection]);
+                        close = true;
+                    }
+                }
+            });
+
+        if close {
+            self.show_command_palette = false;
+            self.command_palette_query.clear();
+            self.command_palette_selection = 0;
+        }
+        if let Some(idx) = execute_idx {
+            (COMMANDS[idx].action)(self);
+        }
+    }
+}
+
+// ── Fuzzy matching ────────────────────────────────────────────────────────────
+
+/// Returns `true` if every character in `query` appears in `target` in order
+/// (but not necessarily consecutively).  Both arguments are expected to be
+/// already lower-cased by the caller.
+///
+/// An empty query always matches.
+pub(super) fn fuzzy_match(query: &str, target: &str) -> bool {
+    if query.is_empty() { return true; }
+    let mut target_chars = target.chars();
+    for qc in query.chars() {
+        if !target_chars.any(|tc| tc == qc) {
+            return false;
+        }
+    }
+    true
+}
+
+// ── Command registry ──────────────────────────────────────────────────────────
+
+/// A single entry in the command palette.
+pub(super) struct Command {
+    pub name: &'static str,
+    pub keywords: &'static [&'static str],
+    pub action: fn(&mut TextToolApp),
+}
+
+/// All commands available in the command palette (Ctrl+Shift+P).
+pub(super) static COMMANDS: &[Command] = &[
+    Command {
+        name: "打开项目文件夹",
+        keywords: &["open", "folder", "dkxm", "project"],
+        action: |app| {
+            if let Some(path) = rfd_pick_folder() {
+                app.open_project(path);
+            }
+        },
+    },
+    Command {
+        name: "新建文件",
+        keywords: &["new", "file", "xjwj", "create"],
+        action: |app| {
+            if let Some(root) = app.project_root.clone() {
+                app.new_file(root.join("chapters"));
+            } else {
+                app.status = "请先打开一个项目".to_owned();
+            }
+        },
+    },
+    Command {
+        name: "保存当前文件",
+        keywords: &["save", "bcwj", "ctrl+s"],
+        action: |app| app.save_left(),
+    },
+    Command {
+        name: "切换主题（亮色/暗色）",
+        keywords: &["theme", "dark", "light", "qt", "qhzt"],
+        action: |app| {
+            app.theme = match app.theme {
+                crate::app::AppTheme::Dark  => crate::app::AppTheme::Light,
+                crate::app::AppTheme::Light => crate::app::AppTheme::Dark,
+            };
+            app.save_config();
+        },
+    },
+    Command {
+        name: "切换预览模式",
+        keywords: &["preview", "ctrl+p", "qhyl"],
+        action: |app| {
+            let is_md = app.left_file.as_ref().map(|f| f.is_markdown()).unwrap_or(false);
+            if is_md { app.left_preview_mode = !app.left_preview_mode; }
+        },
+    },
+    Command {
+        name: "导出章节合集",
+        keywords: &["export", "merge", "dczj"],
+        action: |app| app.export_chapters_merged(),
+    },
+    Command {
+        name: "导出为纯文本",
+        keywords: &["export", "txt", "plain", "dcwb"],
+        action: |app| app.export_plain_text(),
+    },
+    Command {
+        name: "全文搜索",
+        keywords: &["search", "find", "ctrl+shift+f", "qwss"],
+        action: |app| app.show_search = true,
+    },
+    Command {
+        name: "备份项目",
+        keywords: &["backup", "bfxm"],
+        action: |app| app.backup_project(),
+    },
+    Command {
+        name: "打开设置",
+        keywords: &["settings", "preferences", "dksz"],
+        action: |app| app.show_settings_window = true,
+    },
+    Command {
+        name: "应用短篇模板",
+        keywords: &["template", "short", "yydp"],
+        action: |app| app.apply_template_short(),
+    },
+    Command {
+        name: "应用长篇模板",
+        keywords: &["template", "long", "yycp"],
+        action: |app| app.apply_template_long(),
+    },
+    Command {
+        name: "切换到 LLM 面板",
+        keywords: &["llm", "ai", "qhllm"],
+        action: |app| app.active_panel = crate::app::Panel::Llm,
+    },
+    Command {
+        name: "切换到小说编辑",
+        keywords: &["novel", "editor", "qhxs"],
+        action: |app| app.active_panel = crate::app::Panel::Novel,
+    },
+    Command {
+        name: "切换到世界对象",
+        keywords: &["world", "objects", "characters", "qhsj"],
+        action: |app| app.active_panel = crate::app::Panel::Objects,
+    },
+    Command {
+        name: "切换到章节结构",
+        keywords: &["structure", "chapters", "outline", "qhzj"],
+        action: |app| app.active_panel = crate::app::Panel::Structure,
+    },
+];
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::super::FindBar;
+    use super::fuzzy_match;
+
+    // ── fuzzy_match tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_fuzzy_match_empty_query_always_matches() {
+        assert!(fuzzy_match("", "any target string"));
+        assert!(fuzzy_match("", ""));
+    }
+
+    #[test]
+    fn test_fuzzy_match_exact_and_substring() {
+        assert!(fuzzy_match("save", "save"));
+        assert!(fuzzy_match("save", "保存文件 save file"));
+        assert!(fuzzy_match("sv", "save"));          // non-consecutive but in order
+        assert!(!fuzzy_match("es", "save"));         // 'e' before 's' – wrong order
+    }
+
+    #[test]
+    fn test_fuzzy_match_out_of_order_fails() {
+        assert!(!fuzzy_match("ba", "ab"));           // b comes after a in target
+        assert!(fuzzy_match("ab", "ab"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_chinese_chars() {
+        assert!(fuzzy_match("主题", "切换主题（亮色/暗色）"));
+        // '主' and '色' both appear in order in the target, so this matches
+        assert!(fuzzy_match("主色", "切换主题（亮色/暗色）"));
+        // '暗主' — '暗' comes after '主' so order is wrong → no match
+        assert!(!fuzzy_match("暗主", "切换主题（亮色/暗色）"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_partial_keyword() {
+        assert!(fuzzy_match("exp", "export"));
+        // e-x-p-o-r-t: x at 1, p at 2, o at 3 — all in order
+        assert!(fuzzy_match("xpo", "export"));
+        // 'z' is not in "export" → no match
+        assert!(!fuzzy_match("xpz", "export"));
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_ascii() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.refresh_matches("hello world hello");
+        assert_eq!(bar.match_ranges.len(), 2);
+        assert_eq!(bar.match_ranges[0].byte_start, 0);
+        assert_eq!(bar.match_ranges[0].byte_end, 5);
+        assert_eq!(bar.match_ranges[0].char_start, 0);
+        assert_eq!(bar.match_ranges[0].char_end, 5);
+        assert_eq!(bar.match_ranges[1].byte_start, 12);
+        assert_eq!(bar.match_ranges[1].byte_end, 17);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_case_insensitive() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.case_sensitive = false;
+        bar.refresh_matches("Hello HELLO hello");
+        assert_eq!(bar.match_ranges.len(), 3);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_case_sensitive() {
+        let mut bar = FindBar::new(false);
+        bar.query = "hello".to_owned();
+        bar.case_sensitive = true;
+        bar.refresh_matches("Hello HELLO hello");
+        assert_eq!(bar.match_ranges.len(), 1);
+    }
+
+    #[test]
+    fn test_find_bar_refresh_matches_chinese() {
+        let mut bar = FindBar::new(false);
+        bar.query = "世界".to_owned();
+        bar.refresh_matches("你好世界，再见世界");
+        assert_eq!(bar.match_ranges.len(), 2);
+    }
+
+    #[test]
+    fn test_find_bar_navigate() {
+        let mut bar = FindBar::new(false);
+        bar.query = "a".to_owned();
+        bar.refresh_matches("a b a c a");
+        assert_eq!(bar.match_ranges.len(), 3);
+        assert_eq!(bar.current_match, 0);
+        bar.go_next();
+        assert_eq!(bar.current_match, 1);
+        bar.go_prev();
+        assert_eq!(bar.current_match, 0);
+        bar.go_prev();
+        assert_eq!(bar.current_match, 2);
+        bar.go_next();
+        assert_eq!(bar.current_match, 0);
+    }
+
+    #[test]
+    fn test_find_bar_empty_query() {
+        let mut bar = FindBar::new(false);
+        bar.refresh_matches("some text");
+        assert!(bar.match_ranges.is_empty());
     }
 }

@@ -27,7 +27,7 @@ impl TextToolApp {
 
     // ── Export & Backup ───────────────────────────────────────────────────────
 
-    /// Concatenate all `Content/*.md` files in alphabetical order and save to a
+    /// Concatenate all `chapters/*.md` files in alphabetical order and save to a
     /// user-chosen file via a save-file dialog.
     pub(super) fn export_chapters_merged(&mut self) {
         let Some(root) = self.project_root.as_ref() else {
@@ -80,14 +80,14 @@ impl TextToolApp {
         }
     }
 
-    /// Export all `Content/*.md` chapters as a single plain-text `.txt` file,
+    /// Export all `chapters/*.md` chapters as a single plain-text `.txt` file,
     /// stripping Markdown syntax markers.
     pub(super) fn export_plain_text(&mut self) {
         let Some(root) = self.project_root.as_ref() else {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        let content_dir = root.join("Content");
+        let content_dir = root.join("chapters");
         let mut md_files: Vec<PathBuf> = std::fs::read_dir(&content_dir)
             .into_iter()
             .flatten()
@@ -191,6 +191,19 @@ pub(in crate::app) fn count_words(md: &str) -> usize {
         }
     }
     count
+}
+
+/// Sum word counts for all `.md` files in `dir`.
+pub(in crate::app) fn count_words_in_dir(dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries.flatten().filter_map(|e| {
+        let p = e.path();
+        if p.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            std::fs::read_to_string(&p).ok().map(|t| count_words(&t))
+        } else {
+            None
+        }
+    }).sum()
 }
 
 
