@@ -452,12 +452,18 @@ pub struct MarkdownSettings {
     /// Can be enabled in Settings.
     #[serde(default)]
     pub show_files_tab: bool,
+    /// Daily writing goal in words (CJK characters + Latin word-tokens).
+    /// 0 means no goal is set. Shown as a progress bar in the settings window
+    /// and as "今日目标" progress in the editor status area.
+    #[serde(default = "default_daily_word_goal")]
+    pub daily_word_goal: u32,
 }
 
 fn default_true() -> bool { true }
 fn default_tab_size() -> u8 { 2 }
 fn default_editor_font_size() -> f32 { 13.0 }
 fn default_auto_save_interval() -> u32 { 60 }
+fn default_daily_word_goal() -> u32 { 1000 }
 
 impl Default for MarkdownSettings {
     fn default() -> Self {
@@ -470,12 +476,46 @@ impl Default for MarkdownSettings {
             editor_font_size: 13.0,
             auto_save_interval_secs: 60,
             show_files_tab: false,
+            daily_word_goal: 1000,
         }
     }
 }
 
-// ── App configuration (persisted to disk) ─────────────────────────────────────
-
+/// Application configuration persisted to `~/.config/qingmo/config.json`.
+///
+/// ## Config file location
+/// | Platform | Path |
+/// |----------|------|
+/// | Linux / macOS | `$HOME/.config/qingmo/config.json` |
+/// | Windows | `%USERPROFILE%\.config\qingmo\config.json` |
+///
+/// ## Schema example
+/// ```json
+/// {
+///   "llm_config": {
+///     "model_path": "",
+///     "api_url": "http://localhost:11434/api/generate",
+///     "temperature": 0.7,
+///     "max_tokens": 512,
+///     "use_local": true,
+///     "system_prompt": ""
+///   },
+///   "md_settings": {
+///     "preview_font_size": 14.0,
+///     "default_to_preview": false,
+///     "hide_json": true,
+///     "tab_size": 2,
+///     "auto_extract_structure": false,
+///     "editor_font_size": 13.0,
+///     "auto_save_interval_secs": 60,
+///     "show_files_tab": false,
+///     "daily_word_goal": 1000
+///   },
+///   "last_project": "/home/user/my_novel",
+///   "auto_load": true,
+///   "theme": "Dark"
+/// }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub llm_config: LlmConfig,

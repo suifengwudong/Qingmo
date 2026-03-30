@@ -747,7 +747,9 @@ impl Skill for WriteFileContentSkill {
             return Err("拒绝写入项目目录之外的文件".to_owned());
         }
 
-        std::fs::create_dir_all(canonical_file.parent().unwrap())
+        let parent_dir = canonical_file.parent()
+            .ok_or_else(|| "文件路径无效，无法解析父目录".to_owned())?;
+        std::fs::create_dir_all(parent_dir)
             .map_err(|e| format!("创建目录失败: {e}"))?;
 
         if mode == "overwrite" {

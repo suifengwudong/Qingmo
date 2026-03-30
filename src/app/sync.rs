@@ -248,13 +248,13 @@ impl TextToolApp {
                 }
             }
         }
-        if !errors.is_empty() {
-            self.status = format!("模板创建部分失败: {}", errors.join("; "));
-            return;
-        }
         self.sync_struct_from_folders();
         self.refresh_tree();
-        self.status = "已创建短篇模板（单层章节结构）".to_owned();
+        if !errors.is_empty() {
+            self.status = format!("模板创建部分失败（已成功创建的文件保留在磁盘）: {}", errors.join("; "));
+        } else {
+            self.status = "已创建短篇模板（单层章节结构）".to_owned();
+        }
     }
 
     /// Create a long-novel project template under `self.project_root`:
@@ -292,13 +292,13 @@ impl TextToolApp {
                 }
             }
         }
-        if !errors.is_empty() {
-            self.status = format!("模板创建部分失败: {}", errors.join("; "));
-            return;
-        }
         self.sync_struct_from_folders();
         self.refresh_tree();
-        self.status = "已创建长篇模板（卷→章二层结构）".to_owned();
+        if !errors.is_empty() {
+            self.status = format!("模板创建部分失败（已成功创建的文件保留在磁盘）: {}", errors.join("; "));
+        } else {
+            self.status = "已创建长篇模板（卷→章二层结构）".to_owned();
+        }
     }
 }
 
