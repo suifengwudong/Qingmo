@@ -1132,12 +1132,12 @@ impl TextToolApp {
                             ui.separator();
                             ui.label(RichText::new("单层章节结构").strong());
                             ui.label(
-                                RichText::new("Content/\n  序章.md\n  第一章.md\n  第二章.md\n  …")
+                                RichText::new("chapters/\n  序章.md\n  第一章.md\n  第二章.md\n  …")
                                     .monospace().small().color(Color32::from_gray(150)),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new("适合短篇小说，所有章节\n直接在 Content/ 下")
+                                RichText::new("适合短篇小说，所有章节\n直接在 chapters/ 下")
                                     .small().color(Color32::from_gray(160)),
                             );
                         }).response.interact(egui::Sense::click());
@@ -1153,12 +1153,12 @@ impl TextToolApp {
                             ui.separator();
                             ui.label(RichText::new("卷→章二层结构").strong());
                             ui.label(
-                                RichText::new("Content/\n  第一卷/\n    第一章.md\n    第二章.md\n  第二卷/\n    …")
+                                RichText::new("chapters/\n  第一卷/\n    第一章.md\n    第二章.md\n  第二卷/\n    …")
                                     .monospace().small().color(Color32::from_gray(150)),
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new("适合长篇小说，Content/ 按\n「卷」分子目录管理章节")
+                                RichText::new("适合长篇小说，chapters/ 按\n「卷」分子目录管理章节")
                                     .small().color(Color32::from_gray(160)),
                             );
                         }).response.interact(egui::Sense::click());
@@ -1322,7 +1322,7 @@ pub(super) static COMMANDS: &[Command] = &[
         keywords: &["new", "file", "xjwj", "create"],
         action: |app| {
             if let Some(root) = app.project_root.clone() {
-                app.new_file(root.join("Content"));
+                app.new_file(root.join("chapters"));
             } else {
                 app.status = "请先打开一个项目".to_owned();
             }
