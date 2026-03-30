@@ -703,3 +703,386 @@ impl Panel {
         }
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_object_kind_labels() {
+        assert_eq!(ObjectKind::Character.label(), "人物");
+        assert_eq!(ObjectKind::Scene.label(), "场景");
+        assert_eq!(ObjectKind::Location.label(), "地点");
+        assert_eq!(ObjectKind::Item.label(), "道具");
+        assert_eq!(ObjectKind::Faction.label(), "势力");
+        assert_eq!(ObjectKind::Other.label(), "其他");
+    }
+
+    #[test]
+    fn test_world_object_new() {
+        let obj = WorldObject::new("张三", ObjectKind::Character);
+        assert_eq!(obj.name, "张三");
+        assert_eq!(obj.kind, ObjectKind::Character);
+        assert!(obj.description.is_empty());
+        assert!(obj.links.is_empty());
+    }
+
+    #[test]
+    fn test_world_object_link() {
+        let mut obj = WorldObject::new("张三", ObjectKind::Character);
+        obj.links.push(ObjectLink {
+            target: LinkTarget::Object("李四".to_owned()),
+            kind: RelationKind::Friend,
+            note: String::new(),
+        });
+        assert_eq!(obj.links.len(), 1);
+        assert_eq!(obj.links[0].target.display_name(), "李四");
+        assert_eq!(obj.links[0].target.type_label(), "对象");
+    }
+
+    #[test]
+    fn test_world_object_link_to_node() {
+        let mut obj = WorldObject::new("古剑", ObjectKind::Item);
+        obj.links.push(ObjectLink {
+            target: LinkTarget::Node("第一章".to_owned()),
+            kind: RelationKind::AppearsIn,
+            note: "在山洞中被发现".to_owned(),
+        });
+        assert_eq!(obj.links[0].target.type_label(), "章节");
+        assert_eq!(obj.links[0].note, "在山洞中被发现");
+    }
+
+    #[test]
+    fn test_world_object_json_serialization() {
+        let mut obj = WorldObject::new("主角", ObjectKind::Character);
+        obj.description = "勇敢、善良".to_owned();
+        obj.links.push(ObjectLink {
+            target: LinkTarget::Object("反派".to_owned()),
+            kind: RelationKind::Enemy,
+            note: String::new(),
+        });
+        let json = serde_json::to_string(&obj).expect("WorldObject serialization should succeed");
+        let d: WorldObject = serde_json::from_str(&json).expect("WorldObject deserialization should succeed");
+        assert_eq!(d.name, "主角");
+        assert_eq!(d.kind, ObjectKind::Character);
+        assert_eq!(d.links[0].kind, RelationKind::Enemy);
+    }
+
+    #[test]
+    fn test_struct_kind_labels() {
+        assert_eq!(StructKind::Outline.label(), "总纲");
+        assert_eq!(StructKind::Volume.label(), "卷");
+        assert_eq!(StructKind::Chapter.label(), "章");
+        assert_eq!(StructKind::Section.label(), "节");
+    }
+
+    #[test]
+    fn test_struct_kind_default_child() {
+        assert_eq!(StructKind::Outline.default_child_kind(), StructKind::Volume);
+        assert_eq!(StructKind::Volume.default_child_kind(), StructKind::Chapter);
+        assert_eq!(StructKind::Chapter.default_child_kind(), StructKind::Section);
+    }
+
+    #[test]
+    fn test_struct_node_new() {
+        let n = StructNode::new("第一章", StructKind::Chapter);
+        assert_eq!(n.title, "第一章");
+        assert_eq!(n.kind, StructKind::Chapter);
+        assert!(n.children.is_empty());
+        assert!(n.linked_objects.is_empty());
+        assert!(!n.done);
+    }
+
+    #[test]
+    fn test_struct_node_leaf_count() {
+        let mut vol = StructNode::new("第一卷", StructKind::Volume);
+        vol.children.push(StructNode::new("第一章", StructKind::Chapter));
+        vol.children.push(StructNode::new("第二章", StructKind::Chapter));
+        assert_eq!(vol.leaf_count(), 2);
+    }
+
+    #[test]
+    fn test_struct_node_done_count() {
+        let mut vol = StructNode::new("第一卷", StructKind::Volume);
+        let mut ch1 = StructNode::new("第一章", StructKind::Chapter);
+        ch1.done = true;
+        vol.children.push(ch1);
+        vol.children.push(StructNode::new("第二章", StructKind::Chapter));
+        assert_eq!(vol.done_count(), 1);
+        assert_eq!(vol.leaf_count(), 2);
+    }
+
+    #[test]
+    fn test_struct_node_json_serialization() {
+        let mut node = StructNode::new("序章", StructKind::Chapter);
+        node.tag = ChapterTag::Foreshadow;
+        node.done = true;
+        node.linked_objects.push("主角".to_owned());
+        let json = serde_json::to_string(&node).expect("StructNode serialization should succeed");
+        let d: StructNode = serde_json::from_str(&json).expect("StructNode deserialization should succeed");
+        assert_eq!(d.title, "序章");
+        assert_eq!(d.tag, ChapterTag::Foreshadow);
+        assert!(d.done);
+        assert_eq!(d.linked_objects[0], "主角");
+    }
+
+    #[test]
+    fn test_node_at() {
+        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
+        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
+        assert_eq!(node_at(&roots, &[0]).expect("node should exist at [0]").title, "第一卷");
+        assert_eq!(node_at(&roots, &[0, 0]).expect("node should exist at [0,0]").title, "第一章");
+        assert!(node_at(&roots, &[1]).is_none());
+    }
+
+    #[test]
+    fn test_node_at_mut() {
+        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
+        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
+        node_at_mut(&mut roots, &[0, 0]).expect("node should exist at [0,0]").done = true;
+        assert!(roots[0].children[0].done);
+    }
+
+    #[test]
+    fn test_all_node_titles() {
+        let mut roots = vec![StructNode::new("第一卷", StructKind::Volume)];
+        roots[0].children.push(StructNode::new("第一章", StructKind::Chapter));
+        roots[0].children.push(StructNode::new("第二章", StructKind::Chapter));
+        let titles = all_node_titles(&roots);
+        assert_eq!(titles, vec!["第一卷", "第一章", "第二章"]);
+    }
+
+    #[test]
+    fn test_relation_kind_labels() {
+        assert_eq!(RelationKind::Friend.label(), "友好");
+        assert_eq!(RelationKind::Enemy.label(), "敌对");
+        assert_eq!(RelationKind::Family.label(), "亲属");
+        assert_eq!(RelationKind::AppearsIn.label(), "出场");
+        assert_eq!(RelationKind::Foreshadows.label(), "铺垫");
+        assert_eq!(RelationKind::Resolves.label(), "回收");
+    }
+
+    #[test]
+    fn test_chapter_tag_labels() {
+        assert_eq!(ChapterTag::Climax.label(), "高潮");
+        assert_eq!(ChapterTag::Foreshadow.label(), "伏笔");
+        assert_eq!(ChapterTag::Transition.label(), "过渡");
+        assert_eq!(ChapterTag::Normal.label(), "普通");
+    }
+
+    #[test]
+    fn test_foreshadow_new() {
+        let fs = Foreshadow::new("神秘礼物");
+        assert_eq!(fs.name, "神秘礼物");
+        assert!(!fs.resolved);
+        assert!(fs.related_chapters.is_empty());
+    }
+
+    #[test]
+    fn test_markdown_settings_default() {
+        let s = MarkdownSettings::default();
+        assert_eq!(s.preview_font_size, 14.0);
+        assert!(!s.default_to_preview);
+    }
+
+    #[test]
+    fn test_markdown_settings_custom() {
+        let s = MarkdownSettings {
+            preview_font_size: 18.0,
+            default_to_preview: true,
+            ..MarkdownSettings::default()
+        };
+        assert_eq!(s.preview_font_size, 18.0);
+        assert!(s.default_to_preview);
+    }
+
+    #[test]
+    fn test_milestone_new() {
+        let m = Milestone::new("第一阶段完成");
+        assert_eq!(m.name, "第一阶段完成");
+        assert!(!m.completed);
+        assert!(m.description.is_empty());
+    }
+
+    #[test]
+    fn test_milestone_completion() {
+        let mut m = Milestone::new("MVP");
+        assert!(!m.completed);
+        m.completed = true;
+        assert!(m.completed);
+    }
+
+    #[test]
+    fn test_milestone_json_serialization() {
+        let mut m = Milestone::new("发布 v1.0");
+        m.description = "第一个正式版本".to_owned();
+        m.completed = true;
+        let json = serde_json::to_string(&m).expect("Milestone serialization should succeed");
+        let d: Milestone = serde_json::from_str(&json).expect("Milestone deserialization should succeed");
+        assert_eq!(d.name, "发布 v1.0");
+        assert_eq!(d.description, "第一个正式版本");
+        assert!(d.completed);
+    }
+
+    #[test]
+    fn test_llm_config_serialization() {
+        let cfg = LlmConfig {
+            model_path: "llama2".to_owned(),
+            api_url: "http://localhost:11434/api/generate".to_owned(),
+            temperature: 0.8,
+            max_tokens: 256,
+            use_local: false,
+            system_prompt: "你是一个写作助手".to_owned(),
+        };
+        let json = serde_json::to_string(&cfg).expect("config serialization should succeed");
+        let d: LlmConfig = serde_json::from_str(&json).expect("LlmConfig deserialization should succeed");
+        assert_eq!(d.model_path, "llama2");
+        assert_eq!(d.api_url, "http://localhost:11434/api/generate");
+        assert!((d.temperature - 0.8).abs() < 1e-5);
+        assert_eq!(d.max_tokens, 256);
+        assert!(!d.use_local);
+        assert_eq!(d.system_prompt, "你是一个写作助手");
+    }
+
+    #[test]
+    fn test_markdown_settings_serialization() {
+        let s = MarkdownSettings {
+            preview_font_size: 18.0,
+            default_to_preview: true,
+            ..MarkdownSettings::default()
+        };
+        let json = serde_json::to_string(&s).expect("MarkdownSettings serialization should succeed");
+        let d: MarkdownSettings = serde_json::from_str(&json).expect("MarkdownSettings deserialization should succeed");
+        assert!((d.preview_font_size - 18.0).abs() < 1e-5);
+        assert!(d.default_to_preview);
+    }
+
+    #[test]
+    fn test_app_config_serialization_roundtrip() {
+        let cfg = AppConfig {
+            llm_config: LlmConfig {
+                model_path: "phi2".to_owned(),
+                api_url: "http://localhost:8080".to_owned(),
+                temperature: 0.5,
+                max_tokens: 1024,
+                use_local: true,
+                system_prompt: String::new(),
+            },
+            md_settings: MarkdownSettings {
+                preview_font_size: 16.0,
+                default_to_preview: true,
+                ..MarkdownSettings::default()
+            },
+            last_project: Some("/home/user/my_novel".to_owned()),
+            auto_load: true,
+            theme: AppTheme::Dark,
+        };
+        let json = serde_json::to_string_pretty(&cfg).expect("AppConfig serialization should succeed");
+        let d: AppConfig = serde_json::from_str(&json).expect("AppConfig deserialization should succeed");
+        assert_eq!(d.llm_config.model_path, "phi2");
+        assert_eq!(d.md_settings.preview_font_size, 16.0);
+        assert_eq!(d.last_project, Some("/home/user/my_novel".to_owned()));
+        assert!(d.auto_load);
+    }
+
+    #[test]
+    fn test_markdown_settings_new_fields_defaults() {
+        let s = MarkdownSettings::default();
+        assert!(s.hide_json);
+        assert_eq!(s.tab_size, 2);
+        assert!(!s.auto_extract_structure);
+        assert!((s.editor_font_size - 13.0).abs() < 1e-5);
+        assert_eq!(s.auto_save_interval_secs, 60);
+        assert!(!s.show_files_tab);
+    }
+
+    #[test]
+    fn test_markdown_settings_hide_json_roundtrip() {
+        let old_json = r#"{"preview_font_size":14.0,"default_to_preview":false}"#;
+        let s: MarkdownSettings = serde_json::from_str(old_json).expect("old MarkdownSettings JSON should deserialize with defaults");
+        assert!(s.hide_json);
+        assert_eq!(s.tab_size, 2);
+        assert!((s.editor_font_size - 13.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_app_theme_default() {
+        let cfg: AppConfig = serde_json::from_str(
+            r#"{"llm_config":{"model_path":"","api_url":"","temperature":0.7,"max_tokens":512,"use_local":true,"system_prompt":""},
+                "md_settings":{"preview_font_size":14.0,"default_to_preview":false},
+                "last_project":null,"auto_load":false}"#
+        ).expect("AppConfig deserialization should succeed");
+        assert_eq!(cfg.theme, AppTheme::Dark);
+    }
+
+    #[test]
+    fn test_build_character_context_empty() {
+        let objects: Vec<WorldObject> = vec![];
+        let ctx: String = if objects.is_empty() {
+            String::new()
+        } else {
+            let mut out = String::from("## 世界对象\n\n");
+            for o in &objects {
+                out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
+            }
+            out
+        };
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn test_build_character_context_with_objects() {
+        let objects = vec![
+            WorldObject::new("主角", ObjectKind::Character),
+            WorldObject::new("城堡", ObjectKind::Location),
+        ];
+        let mut out = String::from("## 世界对象\n\n");
+        for o in &objects {
+            out.push_str(&format!("- **{}** ({})\n", o.name, o.kind.label()));
+        }
+        assert!(out.contains("主角"));
+        assert!(out.contains("城堡"));
+        assert!(out.contains("人物"));
+        assert!(out.contains("地点"));
+    }
+
+    #[test]
+    fn test_unix_secs_to_iso_date_known_dates() {
+        assert_eq!(unix_secs_to_iso_date(0), "1970-01-01");
+        assert_eq!(unix_secs_to_iso_date(86400), "1970-01-02");
+        assert_eq!(unix_secs_to_iso_date(20542 * 86400), "2026-03-30");
+        assert_eq!(unix_secs_to_iso_date((10957 + 59) * 86400), "2000-02-29");
+    }
+
+    #[test]
+    fn test_llm_history_alloc_id_is_monotonic() {
+        let mut h = LlmHistory::default();
+        assert_eq!(h.alloc_id(), 1);
+        assert_eq!(h.alloc_id(), 2);
+        assert_eq!(h.alloc_id(), 3);
+    }
+
+    #[test]
+    fn test_llm_history_load_repairs_next_id() {
+        let mut h = LlmHistory::default();
+        h.entries.push(LlmHistoryEntry {
+            id: 5,
+            timestamp: 0,
+            session_key: "2026-01-01".to_owned(),
+            prompt: "test".to_owned(),
+            response: "ok".to_owned(),
+            model: "mock".to_owned(),
+        });
+        let json = serde_json::to_string(&h).unwrap();
+        let old_json = json.replace(r#""next_id":5,"#, "").replace(r#","next_id":5"#, "");
+        let dir = std::env::temp_dir().join("qingmo_test_llm_history_repair");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm_history.json");
+        std::fs::write(&path, &old_json).unwrap();
+        let loaded = LlmHistory::load(&path);
+        assert!(loaded.next_id >= 5, "next_id should be repaired to at least 5, got {}", loaded.next_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

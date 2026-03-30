@@ -114,3 +114,47 @@ pub fn rfd_save_file(hint: &Path) -> Option<PathBuf> {
         None
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_open_file_is_markdown() {
+        let f = OpenFile::new(PathBuf::from("test.md"), String::new());
+        assert!(f.is_markdown());
+        let f2 = OpenFile::new(PathBuf::from("test.json"), String::new());
+        assert!(!f2.is_markdown());
+    }
+
+    #[test]
+    fn test_open_file_title_modified() {
+        let mut f = OpenFile::new(PathBuf::from("test.md"), String::new());
+        assert_eq!(f.title(), "test.md");
+        f.modified = true;
+        assert_eq!(f.title(), "● test.md");
+    }
+
+    #[test]
+    fn test_file_node_from_path_filtered_hides_json() {
+        let dir = std::env::temp_dir().join("qingmo_test_filetree");
+        std::fs::create_dir_all(&dir).expect("test directory creation should succeed");
+        std::fs::write(dir.join("chapter1.md"), "hello").expect("test file write should succeed");
+        std::fs::write(dir.join("data.json"), "{}").expect("test file write should succeed");
+
+        let node_show = FileNode::from_path_filtered(&dir, false).expect("FileNode creation should succeed");
+        let node_hide = FileNode::from_path_filtered(&dir, true).expect("FileNode creation with hide_json should succeed");
+
+        let show_names: Vec<_> = node_show.children.iter().map(|n| &n.name).collect();
+        let hide_names: Vec<_> = node_hide.children.iter().map(|n| &n.name).collect();
+
+        assert!(show_names.iter().any(|n| n.as_str() == "data.json"));
+        assert!(!hide_names.iter().any(|n| n.as_str() == "data.json"));
+        assert!(hide_names.iter().any(|n| n.as_str() == "chapter1.md"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
