@@ -123,7 +123,9 @@ impl TextToolApp {
                     // ── Full-book word-count stats ────────────────────────────
                     if let Some(root) = &self.project_root.clone() {
                         let content_dir = root.join("chapters");
-                        let total = crate::app::search::count_words_in_dir(&content_dir);
+                        // One disk read for both total and per-chapter data.
+                        let chapters = crate::app::search::count_words_per_chapter(&content_dir);
+                        let total: usize = chapters.iter().map(|(_, wc)| wc).sum();
                         ui.separator();
                         ui.add_space(2.0);
                         ui.label(RichText::new(format!("📚 全书合计: {total} 字"))
@@ -141,7 +143,6 @@ impl TextToolApp {
                         }
 
                         // Per-chapter breakdown (collapsible)
-                        let chapters = crate::app::search::count_words_per_chapter(&content_dir);
                         if !chapters.is_empty() {
                             egui::CollapsingHeader::new(
                                 RichText::new("各章字数").small().color(Color32::from_gray(140)),
@@ -153,7 +154,7 @@ impl TextToolApp {
                                     let ratio = if total > 0 { *wc as f32 / total as f32 } else { 0.0 };
                                     ui.horizontal(|ui| {
                                         ui.label(
-                                            RichText::new(format!("{name}"))
+                                            RichText::new(name.as_str())
                                                 .small()
                                                 .color(Color32::from_gray(180)),
                                         );
