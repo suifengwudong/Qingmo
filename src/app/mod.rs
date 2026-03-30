@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -181,6 +181,31 @@ pub struct TextToolApp {
 
     // ── Find & Replace bar ────────────────────────────────────────────────────
     pub(super) find_bar: Option<FindBar>,
+
+    // ── LLM history ───────────────────────────────────────────────────────────
+    /// Persisted conversation history for the current project.
+    pub(super) llm_history: LlmHistory,
+    /// On-disk path for `llm_history.json` (set when a project is opened).
+    pub(super) llm_history_path: Option<PathBuf>,
+    /// Active tab in the LLM panel: 0 = 任务, 1 = 历史.
+    pub(super) llm_panel_tab: u8,
+    /// Keyword filter in the LLM history tab.
+    pub(super) llm_history_search: String,
+    /// Index of the history entry expanded in the history list (if any).
+    pub(super) llm_history_expanded: Option<usize>,
+    /// Pending delete confirmation index in the history tab.
+    pub(super) llm_history_delete_confirm: Option<usize>,
+
+    // ── Full-book word count stats ────────────────────────────────────────────
+    /// Word counts per file as of project open (snapshot for today's delta).
+    pub(super) word_count_baseline: HashMap<PathBuf, usize>,
+    /// Accumulated new words written this session (since project was opened).
+    pub(super) today_added_words: usize,
+
+    // ── Command palette ───────────────────────────────────────────────────────
+    pub(super) show_command_palette: bool,
+    pub(super) command_palette_query: String,
+    pub(super) command_palette_selection: usize,
 }
 
 #[derive(Debug)]
@@ -366,6 +391,17 @@ impl TextToolApp {
             last_active_panel: Panel::Novel,
             show_template_dialog: false,
             find_bar: None,
+            llm_history: LlmHistory::default(),
+            llm_history_path: None,
+            llm_panel_tab: 0,
+            llm_history_search: String::new(),
+            llm_history_expanded: None,
+            llm_history_delete_confirm: None,
+            word_count_baseline: HashMap::new(),
+            today_added_words: 0,
+            show_command_palette: false,
+            command_palette_query: String::new(),
+            command_palette_selection: 0,
         };
 
         // Apply saved configuration (LLM settings, MD settings, last project).
@@ -400,6 +436,28 @@ impl TextToolApp {
         self.save_config();
         if self.auto_load_from_files {
             self.load_all_from_files();
+        }
+
+        // Load LLM history for this project.
+        let history_path = path.join("Design").join("llm_history.json");
+        self.llm_history = LlmHistory::load(&history_path);
+        self.llm_history_path = Some(history_path);
+
+        // Snapshot word counts for all Content/*.md files so we can compute
+        // today's writing delta during this session.
+        self.word_count_baseline.clear();
+        self.today_added_words = 0;
+        let content_dir = path.join("Content");
+        if let Ok(entries) = std::fs::read_dir(&content_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        self.word_count_baseline.insert(
+                            p, crate::app::search::count_words(&text));
+                    }
+                }
+            }
         }
     }
 
@@ -439,8 +497,13 @@ impl TextToolApp {
 
     pub(super) fn save_left(&mut self) {
         if let Some(f) = &mut self.left_file {
+            let path = f.path.clone();
+            let content = f.content.clone();
             match f.save() {
-                Ok(_) => self.status = format!("已保存: {}", f.path.display()),
+                Ok(_) => {
+                    self.status = format!("已保存: {}", path.display());
+                    self.update_word_count_delta(&path, &content);
+                }
                 Err(e) => self.status = format!("保存失败: {e}"),
             }
         }
@@ -448,11 +511,27 @@ impl TextToolApp {
 
     pub(super) fn save_right(&mut self) {
         if let Some(f) = &mut self.right_file {
+            let path = f.path.clone();
+            let content = f.content.clone();
             match f.save() {
-                Ok(_) => self.status = format!("已保存: {}", f.path.display()),
+                Ok(_) => {
+                    self.status = format!("已保存: {}", path.display());
+                    self.update_word_count_delta(&path, &content);
+                }
                 Err(e) => self.status = format!("保存失败: {e}"),
             }
         }
+    }
+
+    /// Recompute today's writing delta after saving `path` with `content`.
+    fn update_word_count_delta(&mut self, path: &Path, content: &str) {
+        if path.extension().and_then(|e| e.to_str()) != Some("md") { return; }
+        let current = crate::app::search::count_words(content);
+        let baseline = self.word_count_baseline.entry(path.to_owned()).or_insert(0);
+        if current > *baseline {
+            self.today_added_words += current - *baseline;
+        }
+        *baseline = current;
     }
 
     pub(super) fn new_file(&mut self, dir: PathBuf) {
@@ -820,6 +899,7 @@ impl eframe::App for TextToolApp {
         self.draw_settings_window(ctx);
         self.draw_search_window(ctx);
         self.draw_template_dialog(ctx);
+        self.draw_command_palette(ctx);
     }
 }
 

@@ -119,6 +119,28 @@ impl TextToolApp {
                             }
                         }
                     });
+
+                    // ── Full-book word-count stats ────────────────────────────
+                    if let Some(root) = &self.project_root.clone() {
+                        let content_dir = root.join("Content");
+                        let total = crate::app::search::count_words_in_dir(&content_dir);
+                        ui.separator();
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(format!("📚 全书合计: {total} 字"))
+                            .small().color(Color32::from_gray(160)));
+                        if self.today_added_words > 0 {
+                            ui.label(RichText::new(format!("✍ 今日新增: +{} 字", self.today_added_words))
+                                .small().color(Color32::from_rgb(100, 200, 120)));
+                        }
+                        let goal = self.md_settings.daily_word_goal;
+                        if goal > 0 {
+                            let progress = (self.today_added_words as f32 / goal as f32).min(1.0);
+                            ui.add(egui::ProgressBar::new(progress)
+                                .text(format!("{}/{} 字  ({:.0}%)",
+                                    self.today_added_words, goal, progress * 100.0)));
+                        }
+                        ui.add_space(2.0);
+                    }
                 }
             });
 

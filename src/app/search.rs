@@ -193,6 +193,19 @@ pub(in crate::app) fn count_words(md: &str) -> usize {
     count
 }
 
+/// Sum word counts for all `.md` files in `dir`.
+pub(in crate::app) fn count_words_in_dir(dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries.flatten().filter_map(|e| {
+        let p = e.path();
+        if p.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            std::fs::read_to_string(&p).ok().map(|t| count_words(&t))
+        } else {
+            None
+        }
+    }).sum()
+}
+
 
 ///
 /// Handles:
