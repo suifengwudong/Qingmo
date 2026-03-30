@@ -448,14 +448,18 @@ impl TextToolApp {
 
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&file_title).strong());
-                // Word count
+                // Word count (meaningful CJK chars + Latin word-tokens)
                 if let Some(f) = &self.left_file {
                     if f.is_markdown() {
-                        let char_count: usize = f.content.chars()
-                            .filter(|c| !c.is_whitespace()).count();
+                        let word_count = crate::app::search::count_words(&f.content);
+                        let goal = self.md_settings.daily_word_goal;
+                        let label = if goal > 0 {
+                            format!("📝 {word_count} 字 / 目标 {goal}")
+                        } else {
+                            format!("📝 {word_count} 字")
+                        };
                         ui.label(
-                            RichText::new(format!("字数: {char_count}"))
-                                .small().color(Color32::from_gray(150)),
+                            RichText::new(label).small().color(Color32::from_gray(150)),
                         );
                     }
                 }

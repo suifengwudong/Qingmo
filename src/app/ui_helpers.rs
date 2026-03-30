@@ -906,7 +906,7 @@ impl TextToolApp {
                 ui.add_space(6.0);
                 ui.separator();
 
-                // ── Data sync ─────────────────────────────────────────────────
+                // ── 数据同步 ─────────────────────────────────────────────────
                 ui.heading("数据同步");
                 ui.add_space(2.0);
                 let prev_al = self.auto_load_from_files;
@@ -915,6 +915,47 @@ impl TextToolApp {
                     "打开项目时自动从文件反向同步数据",
                 );
                 if self.auto_load_from_files != prev_al { self.save_config(); }
+
+                ui.add_space(6.0);
+                ui.separator();
+
+                // ── 写作目标 ─────────────────────────────────────────────────
+                ui.heading("每日写作目标");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label("每日目标字数:");
+                    let prev_goal = self.md_settings.daily_word_goal;
+                    let mut goal = self.md_settings.daily_word_goal as u32;
+                    ui.add(
+                        egui::Slider::new(&mut goal, 0..=10000)
+                            .step_by(100.0)
+                            .suffix(" 字"),
+                    );
+                    self.md_settings.daily_word_goal = goal;
+                    if self.md_settings.daily_word_goal != prev_goal {
+                        self.save_config();
+                    }
+                });
+                ui.label(
+                    RichText::new("0 = 不设目标；非零时编辑器标题栏显示「N 字 / 目标 M」")
+                        .small().color(Color32::from_gray(140)),
+                );
+
+                // Show progress if we have a current file and a goal
+                if self.md_settings.daily_word_goal > 0 {
+                    if let Some(f) = &self.left_file {
+                        if f.is_markdown() {
+                            let words = crate::app::search::count_words(&f.content);
+                            let goal = self.md_settings.daily_word_goal as usize;
+                            let progress = (words as f32 / goal as f32).min(1.0);
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::ProgressBar::new(progress)
+                                    .text(format!("{words}/{goal} 字  ({:.0}%)", progress * 100.0)),
+                            );
+                        }
+                    }
+                }
 
                 ui.add_space(8.0);
                 ui.separator();
