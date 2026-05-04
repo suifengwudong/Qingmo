@@ -167,6 +167,8 @@ pub struct TextToolApp {
     pub(super) show_search: bool,
     pub(super) search_query: String,
     pub(super) search_results: Vec<SearchResult>,
+    /// When `true` the full-text search matches are case-sensitive (default: false).
+    pub(super) search_case_sensitive: bool,
 
     // ── Structure panel auto-save ─────────────────────────────────────────────
     /// Serialised JSON snapshot of `struct_roots` as of the last save.
@@ -450,6 +452,7 @@ impl TextToolApp {
             show_search: false,
             search_query: String::new(),
             search_results: vec![],
+            search_case_sensitive: false,
             struct_json_snapshot: None,
             last_active_panel: Panel::Novel,
             show_template_dialog: false,
