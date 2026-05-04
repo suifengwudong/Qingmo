@@ -1060,6 +1060,7 @@ impl TextToolApp {
                     if ui.button("搜索").clicked() {
                         run_search = true;
                     }
+                    ui.checkbox(&mut self.search_case_sensitive, "区分大小写");
                 });
                 ui.separator();
 

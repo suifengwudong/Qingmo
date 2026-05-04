@@ -17,7 +17,7 @@ impl TextToolApp {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        search_dir(&root, &query, &mut self.search_results);
+        search_dir(&root, &query, self.search_case_sensitive, &mut self.search_results);
         self.status = format!(
             "搜索「{}」找到 {} 处结果",
             query,
@@ -120,20 +120,31 @@ impl TextToolApp {
 
 /// Recursively scan `dir` for lines in `.md` / `.json` files that contain
 /// `query`.  Results are appended to `results`.
-pub(super) fn search_dir(dir: &Path, query: &str, results: &mut Vec<SearchResult>) {
+///
+/// When `case_sensitive` is `false` (the default), matching is performed
+/// on lowercase versions of both the query and each line so that e.g.
+/// "alice" finds "Alice" or "ALICE".  The original line content is always
+/// stored in `SearchResult.line` unchanged.
+pub(super) fn search_dir(dir: &Path, query: &str, case_sensitive: bool, results: &mut Vec<SearchResult>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    let query_lower = if case_sensitive { String::new() } else { query.to_lowercase() };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            search_dir(&path, query, results);
+            search_dir(&path, query, case_sensitive, results);
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext == "md" || ext == "json" {
                 if let Ok(text) = std::fs::read_to_string(&path) {
                     for (line_no, line) in text.lines().enumerate() {
-                        if line.contains(query) {
+                        let matched = if case_sensitive {
+                            line.contains(query)
+                        } else {
+                            line.to_lowercase().contains(&query_lower)
+                        };
+                        if matched {
                             results.push(SearchResult {
                                 file_path: path.clone(),
                                 line_no: line_no + 1,
@@ -465,7 +476,7 @@ mod tests {
         std::fs::write(dir.join("ignore.txt"), "主角 should not be found").unwrap();
 
         let mut results = Vec::new();
-        search_dir(&dir, "主角", &mut results);
+        search_dir(&dir, "主角", true, &mut results);
 
         let exts: Vec<_> = results.iter()
             .map(|r| r.file_path.extension().unwrap_or_default().to_string_lossy().into_owned())
@@ -484,7 +495,7 @@ mod tests {
         std::fs::write(dir.join("ch.md"), "line one\nline two\nfind me\nline four").unwrap();
 
         let mut results = Vec::new();
-        search_dir(&dir, "find me", &mut results);
+        search_dir(&dir, "find me", true, &mut results);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].line_no, 3);
@@ -502,7 +513,7 @@ mod tests {
         std::fs::write(sub.join("deep.md"), "深层匹配内容").unwrap();
 
         let mut results = Vec::new();
-        search_dir(&dir, "深层匹配", &mut results);
+        search_dir(&dir, "深层匹配", true, &mut results);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].file_path.ends_with("deep.md"));
@@ -514,8 +525,57 @@ mod tests {
     #[test]
     fn test_search_dir_missing_path_is_silent() {
         let mut results = Vec::new();
-        search_dir(std::path::Path::new("/nonexistent/qingmo_test"), "query", &mut results);
+        search_dir(std::path::Path::new("/nonexistent/qingmo_test"), "query", true, &mut results);
         assert!(results.is_empty());
+    }
+
+    /// Default (case_sensitive = false): lowercase query matches mixed-case content.
+    #[test]
+    fn test_search_dir_case_insensitive_matches() {
+        let dir = tmp_dir("search_ci1");
+        std::fs::write(dir.join("ch.md"), "Alice walked into the forest.\nALICE shouted.\nalice whispered.").unwrap();
+
+        let mut results = Vec::new();
+        search_dir(&dir, "alice", false, &mut results);
+
+        assert_eq!(results.len(), 3, "case-insensitive should match all 3 variants");
+        // Original lines are stored unchanged.
+        assert!(results.iter().any(|r| r.line.contains("Alice")));
+        assert!(results.iter().any(|r| r.line.contains("ALICE")));
+        assert!(results.iter().any(|r| r.line.contains("alice")));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// case_sensitive = true: only exact-case matches are returned.
+    #[test]
+    fn test_search_dir_case_sensitive_excludes_variants() {
+        let dir = tmp_dir("search_ci2");
+        std::fs::write(dir.join("ch.md"), "Alice walked in.\nALICE shouted.\nalice whispered.").unwrap();
+
+        let mut results = Vec::new();
+        search_dir(&dir, "alice", true, &mut results);
+
+        assert_eq!(results.len(), 1, "case-sensitive should only match exact lowercase");
+        assert!(results[0].line.starts_with("alice"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Case-insensitive search preserves original line content in results.
+    #[test]
+    fn test_search_dir_case_insensitive_preserves_original_line() {
+        let dir = tmp_dir("search_ci3");
+        std::fs::write(dir.join("ch.md"), "Hello WORLD").unwrap();
+
+        let mut results = Vec::new();
+        search_dir(&dir, "hello world", false, &mut results);
+
+        assert_eq!(results.len(), 1);
+        // Original casing must be preserved in the stored line.
+        assert_eq!(results[0].line, "Hello WORLD");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── copy_dir_all ──────────────────────────────────────────────────────────
