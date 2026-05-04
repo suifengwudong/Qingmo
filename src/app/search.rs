@@ -34,7 +34,7 @@ impl TextToolApp {
             self.status = "请先打开一个项目".to_owned();
             return;
         };
-        let content_dir = root.join("Content");
+        let content_dir = root.join("chapters");
         let mut md_files: Vec<PathBuf> = std::fs::read_dir(&content_dir)
             .into_iter()
             .flatten()
